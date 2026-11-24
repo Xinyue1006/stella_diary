@@ -97,6 +97,7 @@ function validateSnapshot(diary) {
   const countdowns = new Set();
   for (const item of diary.countdowns) {
     valid(validId(item?.id) && !countdowns.has(item.id) && typeof item.title === 'string' && item.title.trim() && item.title.length <= 80);
+    valid(item.kind === undefined || item.kind === 'anniversary' || item.kind === 'countdown');
     valid(typeof item.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.date));
     valid(item.date >= '1900-01-01' && item.date <= '2200-12-31' && validTimestamp(item.date + 'T00:00:00.000Z'));
     countdowns.add(item.id);
@@ -167,6 +168,16 @@ async function snapshot(request, bucket, prefix, owner) {
   catch { throw new DiaryRequestError(400, '日记 JSON 格式无效'); }
   valid(payload && (payload.version === null || (typeof payload.version === 'string' && /^[a-f0-9]{32}$/.test(payload.version))));
   const photoIds = validateSnapshot(payload.diary);
+  // Older installed shells drop the kind when they send a full snapshot.
+  // Preserve it for existing IDs, while allowing deletes and edits from those devices.
+  if (payload.version && request.headers.get('X-Diary-Day-Kinds') !== '1' && payload.diary.countdowns.length) {
+    const previous = await bucket.get(key, { onlyIf: { etagMatches: payload.version } });
+    if (!previous?.body) throw new DiaryRequestError(409, '请重新同步最新的日记');
+    const anniversaries = new Set((await previous.json()).countdowns.filter(day => day.kind === 'anniversary').map(day => day.id));
+    for (const day of payload.diary.countdowns) {
+      if (anniversaries.has(day.id)) day.kind = 'anniversary';
+    }
+  }
   await confirmPhotos(bucket, prefix + 'photos/', photoIds);
   const onlyIf = payload.version === null
     ? new Headers({ 'If-None-Match': '*' })

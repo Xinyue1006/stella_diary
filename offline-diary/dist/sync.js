@@ -125,7 +125,7 @@ async function syncOnce(onWork) {
   if (!same(merged, remote)) {
     if (!await rememberUpload(snapshot, merged)) throw new RetrySync();
     const result = await api('/api/sync', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Diary-Owner': cloud.owner },
+        method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Diary-Owner': cloud.owner, 'X-Diary-Day-Kinds': '1' },
       body: JSON.stringify({ version, diary: merged })
     });
     if (typeof result.version !== 'string' || !result.version) throw new Error('未能确认同步结果，请稍后重试。');

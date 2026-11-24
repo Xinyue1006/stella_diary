@@ -5,6 +5,9 @@ import { startSync } from './sync.js';
 const app = document.querySelector('#app');
 const header = document.querySelector('#page-header');
 const tabbar = document.querySelector('#tabbar');
+const phoneBack = document.querySelector('#phone-back');
+const phoneSave = document.querySelector('#phone-save');
+const phoneLayout = window.matchMedia('(max-width: 760px), (max-width: 950px) and (max-height: 540px) and (pointer: coarse)');
 const toastElement = document.querySelector('#toast');
 const session = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const state = {
@@ -29,6 +32,7 @@ let appliedMutation = 0;
 let draftTimer = null;
 let toastTimer = null;
 let today = dayKey();
+let swipeStart = null;
 
 const paths = {
   back: '<path d="m15 18-6-6 6-6"/>',
@@ -263,7 +267,7 @@ async function requestBack(depth = state.views.length - 1) {
   document.activeElement?.blur();
   if (view.kind === 'photo') { finishBack(depth); return; }
   if (view.kind === 'countdown') {
-    if (view.title.trim() || view.date !== view.initialDate) {
+    if (view.title !== (view.original?.title ?? '') || view.date !== view.initialDate || view.dayType !== (view.original?.kind ?? 'countdown')) {
       const choice = await ask('这个日子还没保存', '可以继续填写，或保存后返回。', [
         { value: 'cancel', label: '继续填写' },
         { value: 'discard', label: '放弃并返回', className: 'quiet' },
@@ -339,15 +343,27 @@ async function saveCountdownView(depth = state.views.length - 1) {
   if (view?.kind !== 'countdown') return;
   const form = document.querySelector('#countdown-form');
   if (!form?.reportValidity()) return;
-  const snapshot = { title: view.title.trim(), date: view.date };
+  const snapshot = { title: view.title.trim(), date: view.date, kind: view.dayType };
   await runBusy(async () => {
-    await mutate(() => storage.saveCountdown(snapshot));
+    await mutate(() => storage.saveCountdown(snapshot, view.original?.id, view.original));
     toast('这个日子已收好。');
     finishBack(depth);
   });
 }
 
 function renderHeader(view) {
+  phoneBack.hidden = !view && !state.tabTrail.length && state.tab === 'today';
+  phoneBack.dataset.action = view ? 'back' : 'back-tab';
+  phoneBack.lastElementChild.textContent = view?.kind === 'photo' ? '返回日记' : '返回';
+  const formId = view?.kind === 'editor' ? 'entry-form' : view?.kind === 'countdown' ? 'countdown-form' : null;
+  phoneSave.hidden = !formId;
+  if (formId) {
+    phoneSave.setAttribute('form', formId);
+    phoneSave.textContent = view.kind === 'countdown' ? '收好这个日子' : view.id ? '保存修改' : '收好这条记录';
+  } else {
+    phoneSave.removeAttribute('form');
+  }
+  tabbar.setAttribute('aria-label', view ? '页面操作' : '日记导航');
   header.hidden = !view && state.tab === 'today';
   if (!view) {
     header.innerHTML = state.tab === 'today' ? '' : `<button type="button" class="back-button" data-action="back-tab">${icon('back')}<span>返回</span></button><span class="header-title" aria-hidden="true"></span><div class="header-actions"></div>`;
@@ -369,15 +385,25 @@ function photoStrip(photos, editable = false) {
 
 function countdownMarkup(item, compact = false) {
   const difference = dateDifference(item.date);
-  return `<article class="countdown-card${compact ? ' compact' : ''}"><span class="countdown-flower">${icon('flower')}</span><div class="countdown-copy"><h3>${escape(item.title)}</h3><p>${escape(parseDay(item.date).toLocaleDateString('zh-CN'))}</p></div><div class="countdown-number"><strong>${difference === 0 ? '今天' : Math.abs(difference)}</strong>${difference ? `<span>${difference > 0 ? '天后' : '天前'}</span>` : ''}</div>${!compact ? `<button type="button" class="icon-button" data-action="delete-countdown" data-id="${escape(item.id)}" aria-label="移除${escape(item.title)}">${icon('trash')}</button>` : ''}</article>`;
+  const anniversary = item.kind === 'anniversary';
+  const elapsed = anniversary && difference < 0;
+  const unit = difference > 0 ? '天后' : elapsed ? '天' : '天前';
+  const title = compact ? escape(item.title) : `<button type="button" class="day-edit" data-action="edit-countdown" data-id="${escape(item.id)}" aria-label="编辑${escape(item.title)}">${escape(item.title)}${icon('edit')}</button>`;
+  return `<article class="countdown-card${compact ? ' compact' : ''}${anniversary ? ' anniversary-card' : ''}">
+    <span class="countdown-flower">${icon(anniversary ? 'calendar' : 'flower')}</span>
+    <div class="countdown-copy"><h3>${title}</h3><p>${escape(parseDay(item.date).toLocaleDateString('zh-CN'))}</p></div>
+    <div class="countdown-number">${elapsed ? '<span class="day-since">已过</span>' : ''}<strong>${difference === 0 ? '今天' : Math.abs(difference)}</strong>${difference ? `<span>${unit}</span>` : ''}</div>
+    ${!compact ? `<button type="button" class="icon-button" data-action="delete-countdown" data-id="${escape(item.id)}" aria-label="移除${escape(item.title)}">${icon('trash')}</button>` : ''}
+  </article>`;
 }
 
 function renderToday() {
   const mascot = currentMascot();
   const entries = state.data.entries.filter((entry) => dayKey(entry.occurredAt) === dayKey()).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
-  const nextDay = [...state.data.countdowns].filter((item) => dateDifference(item.date) >= 0).sort((a, b) => a.date.localeCompare(b.date))[0];
+  const byDate = [...state.data.countdowns].sort((a, b) => a.date.localeCompare(b.date));
+  const nextDay = byDate.find(item => dateDifference(item.date) >= 0) || byDate.reverse().find(item => item.kind === 'anniversary');
   const draft = state.data.draft && hasContent(state.data.draft);
-  return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div><button type="button" class="sync-shortcut" data-action="show-sync" aria-label="查看私人同步状态">${icon('cloud')}<span data-sync-label></span></button></div><section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p>${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}</div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section><div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${entries.length ? `<span class="muted">${entries.length} 条 · 按发生时间</span>` : ''}</div>${entries.length ? entries.map((entry) => entryMarkup(entry)).join('') : emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div><aside class="journal-aside"><div class="section-heading"><h2>期待的日子</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有期待日</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
+  return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div><button type="button" class="sync-shortcut" data-action="show-sync" aria-label="查看私人同步状态">${icon('cloud')}<span data-sync-label></span></button></div><section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p>${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}</div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section><div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${entries.length ? `<span class="muted">${entries.length} 条 · 按发生时间</span>` : ''}</div>${entries.length ? entries.map((entry) => entryMarkup(entry)).join('') : emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div><aside class="journal-aside"><div class="section-heading"><h2>期待与纪念</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有即将到来的日子</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
 }
 
 function calendarMarkup() {
@@ -413,7 +439,13 @@ function renderCountdowns() {
     if (aPast !== bPast) return aPast ? 1 : -1;
     return aPast ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date);
   });
-  return `<section class="page page-stack"><div class="page-heading"><div><p class="eyebrow">让日子，有一点盼头</p><h1>期待的日子</h1><p class="muted">一些想期待，也想记住的日子。</p></div>${button('加一个日子', 'new-countdown', { className: 'primary', symbol: 'add' })}</div>${countdowns.length ? `<div class="countdown-list">${countdowns.map((item) => countdownMarkup(item)).join('')}</div>` : emptyState('有期待的时候，再放进来', '旅行、生日，或任何对你有意义的日子。\n已经过去的日子，也可以记住。', 'calendar')}</section>`;
+  function section(label, days) {
+    if (!days.length) return '';
+    return `<section class="countdown-list"><h2 class="day-section-heading">${label}</h2>${days.map(item => countdownMarkup(item)).join('')}</section>`;
+  }
+  const upcoming = section('期待日', countdowns.filter(item => item.kind !== 'anniversary'));
+  const anniversaries = section('纪念日', countdowns.filter(item => item.kind === 'anniversary'));
+  return `<section class="page page-stack"><div class="page-heading"><div><h1>期待与纪念</h1></div>${button('加一个日子', 'new-countdown', { className: 'primary', symbol: 'add' })}</div>${upcoming || anniversaries ? upcoming + anniversaries : emptyState('还没有特别的日子', '记下下次旅行的倒数，或从初次见面那天开始数日子。', 'calendar')}</section>`;
 }
 
 function offlineStatusMarkup() {
@@ -488,7 +520,13 @@ function renderEditor(editor) {
 }
 
 function renderCountdownForm(view) {
-  return `<section class="page editor-view"><form id="countdown-form" class="editor-form"><div class="field"><label class="field-label" for="countdown-title">这是什么日子？</label><input class="field-control" id="countdown-title" name="title" placeholder="例如：一起去看海" maxlength="80" value="${escape(view.title)}" required autocomplete="off"></div><div class="field"><label class="field-label" for="countdown-date">它在哪一天？</label><input class="field-control" id="countdown-date" name="date" type="date" value="${escape(view.date)}" required></div><p class="field-help">未来的日子会显示还有几天，过去的日子也可以记住。</p><div class="editor-footer"><button type="submit" class="button primary">${icon('check')}<span>收好这个日子</span></button></div></form></section>`;
+  const types = [['countdown', '期待日'], ['anniversary', '纪念日']];
+  const options = types.map(([value, label]) => `<label><input type="radio" name="day-type" value="${value}"${view.dayType === value ? ' checked' : ''}><span>${label}</span></label>`).join('');
+  return `<section class="page editor-view"><form id="countdown-form" class="editor-form">
+    <fieldset class="day-type"><legend class="field-label">日子类型</legend><div class="day-types">${options}</div></fieldset>
+    <div class="field"><label class="field-label" for="countdown-title">这是什么日子？</label><input class="field-control" id="countdown-title" name="title" placeholder="例如：第一次一起旅行" maxlength="80" value="${escape(view.title)}" required autocomplete="off"></div>
+    <div class="field"><label class="field-label" for="countdown-date">它在哪一天？</label><input class="field-control" id="countdown-date" name="date" type="date" min="1900-01-01" max="2200-12-31" value="${escape(view.date)}" required></div>
+    <div class="editor-footer"><button type="submit" class="button primary">${icon('check')}<span>收好这个日子</span></button></div></form></section>`;
 }
 
 function renderPhotoViewer(view) {
@@ -527,7 +565,6 @@ function render() {
   renderVersion++;
   const view = currentView();
   renderHeader(view);
-  tabbar.hidden = Boolean(view);
   document.body.classList.toggle('subview-open', Boolean(view));
   for (const tab of tabbar.querySelectorAll('[data-tab]')) {
     if (tab.dataset.tab === state.tab) tab.setAttribute('aria-current', 'page');
@@ -686,7 +723,14 @@ async function handleAction(action, element) {
       if (photo) openView({ kind: 'photo', photo });
       break;
     }
-    case 'new-countdown': openView({ kind: 'countdown', title: '', date: dayKey(), initialDate: dayKey() }); break;
+    case 'new-countdown':
+    case 'edit-countdown': {
+      const original = state.data.countdowns.find(item => item.id === element.dataset.id);
+      if (action === 'edit-countdown' && !original) { toast('这个日子已移除。'); break; }
+      const date = original?.date ?? dayKey();
+      openView({ kind: 'countdown', original, title: original?.title ?? '', date, initialDate: date, dayType: original?.kind ?? 'countdown' });
+      break;
+    }
     case 'delete-countdown': await removeCountdown(element.dataset.id); break;
     case 'show-countdowns': setTab('countdowns'); break;
     case 'select-mascot':
@@ -736,6 +780,7 @@ app.addEventListener('input', (event) => {
   } else if (view?.kind === 'countdown') {
     if (target.id === 'countdown-title') view.title = target.value;
     if (target.id === 'countdown-date') view.date = target.value;
+    if (target.name === 'day-type' && target.checked) view.dayType = target.value;
   }
 });
 
@@ -751,7 +796,58 @@ app.addEventListener('submit', (event) => {
   if (event.target.id === 'countdown-form') void saveCountdownView();
 });
 
+function updateKeyboardInset() {
+  const viewport = window.visualViewport;
+  const gap = viewport && viewport.scale === 1 && phoneLayout.matches
+    ? Math.round(innerHeight - viewport.height - viewport.offsetTop) : 0;
+  document.documentElement.style.setProperty('--keyboard-inset', (gap > 80 ? gap : 0) + 'px');
+}
+window.visualViewport?.addEventListener('resize', updateKeyboardInset);
+window.visualViewport?.addEventListener('scroll', updateKeyboardInset);
+updateKeyboardInset();
+
+// Leave the outer screen edge to Safari's own navigation gestures.
+document.addEventListener('touchstart', event => {
+  swipeStart = null;
+  if (!phoneLayout.matches || phoneBack.hidden || state.busy || state.navigation || state.dialogOpen ||
+      event.touches.length !== 1 || (window.visualViewport?.scale ?? 1) > 1.01 ||
+      !event.target.closest('#content') ||
+      event.target.closest('input, textarea, button, a, label, select, [contenteditable], .entry-photos, dialog') ||
+      !window.getSelection()?.isCollapsed) return;
+  const touch = event.touches[0];
+  const fromRight = innerWidth - touch.clientX;
+  if (fromRight < 24 || fromRight > Math.min(150, innerWidth * .4)) return;
+  swipeStart = { x: touch.clientX, y: touch.clientY, id: touch.identifier, view: currentView(), tab: state.tab };
+}, { passive: true });
+
+document.addEventListener('touchmove', event => {
+  if (!swipeStart) return;
+  const touch = event.touches[0];
+  const left = swipeStart.x - touch.clientX;
+  const vertical = Math.abs(touch.clientY - swipeStart.y);
+  if (event.touches.length !== 1 || left < -10 || vertical > 32 || (vertical > 10 && vertical > left)) {
+    swipeStart = null;
+  } else if (event.cancelable && left > 16 && left > vertical * 2) {
+    event.preventDefault();
+  }
+}, { passive: false });
+
+document.addEventListener('touchcancel', () => { swipeStart = null; }, { passive: true });
+document.addEventListener('touchend', event => {
+  const start = swipeStart;
+  swipeStart = null;
+  const touch = event.changedTouches[0];
+  if (!start || !touch || event.touches.length || touch.identifier !== start.id ||
+      start.view !== currentView() || start.tab !== state.tab || (window.visualViewport?.scale ?? 1) > 1.01) return;
+  const left = start.x - touch.clientX;
+  const vertical = Math.abs(touch.clientY - start.y);
+  if (left < 72 || vertical > 32 || left < vertical * 2) return;
+  if (event.cancelable) event.preventDefault();
+  void handleAction(phoneBack.dataset.action, phoneBack).catch(error => toast(errorMessage(error), true));
+}, { passive: false });
+
 window.addEventListener('popstate', (event) => {
+  swipeStart = null;
   const depth = event.state?.diarySession === session ? Math.max(0, event.state.depth || 0) : 0;
   const targetTab = ['today', 'review', 'countdowns', 'settings'].includes(event.state?.tab) ? event.state.tab : 'today';
   const targetTrail = Array.isArray(event.state?.tabTrail) ? event.state.tabTrail.filter((tab) => ['today', 'review', 'countdowns', 'settings'].includes(tab)) : [];

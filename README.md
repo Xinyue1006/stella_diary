@@ -1,67 +1,79 @@
-# 小猪向阳日记 🌻
+# Sunflower Plush Diary 🌻
 
-给自己用的 iPhone 日记。日常使用可安装主屏幕离线版，原生原型仍可通过 Expo Go 预览。
+A private diary for iPhone and desktop, with six plush pigs to keep you company. Write offline, add photos, and pick up on another device when you reconnect. The diary interface is in Simplified Chinese.
 
-## 安装主屏幕离线版
+## Open the diary on your iPhone
 
-1. 用 iPhone 的 Safari 打开已发布的私人日记网址，登录创建这本日记的 ChatGPT 账号。
-2. 轻点「分享」→「添加到主屏幕」。如有「作为网页 App 打开」开关，将它打开。
-3. 保持联网，从主屏幕新图标打开一次，等到出现「离线已就绪」。以后可以关掉电脑，在手机离线时继续写。
+1. Open your private diary URL in Safari and sign in with the ChatGPT account that owns the site.
+2. Tap **Share → Add to Home Screen**. Turn on **Open as Web App** if Safari offers it, then tap **Add**.
+3. Open the pig icon once while online. When the diary says it is ready for offline use, you can write with your computer turned off.
 
-电脑和 iPhone 使用同一个 ChatGPT 账号打开同一本网页日记。首次使用时，在两台设备上分别联网打开，让「我的 → 私人同步」显示「已同步」。两边已有的文字、照片、草稿和期待日会合并，小猪选择也会同步。离线时可以继续写，下次联网打开时会自动同步。
+On your computer, open the same diary URL and sign in with the same account. Leave the diary open on each device for the first sync. Under **Profile → Private Sync**, the status changes to **Synced** when it finishes. If you used Safari and the Home Screen app separately before, open each one online so both sets of entries can merge.
 
-如果旧日记在 Expo Go，先让网页版完成同步，再从 Expo Go 的「我的」导出完整备份，在网页版的「我的 → 从备份恢复」选择文件。恢复会替换本机资料，再与已同步的云端内容合并。
+## Write and revisit entries
 
-在仓库根目录运行 `python -m http.server 8000 --bind 127.0.0.1 --directory offline-diary/dist` 可预览本机日记。部署私人同步版时，在 `offline-diary` 运行 `npm run build`，将生成的 Worker 部署到仅限所有者访问的 ChatGPT Site，并在该 Site 的托管配置里设置 `"r2": "BUCKET"`。同步接口使用 Sites 提供的访客身份。
+- Save several entries on one day or change the event time to write about an earlier day. Use the calendar or search to find an entry again.
+- Add up to 12 photos per entry, with a limit of 6 MiB per photo. The editor saves a new entry in progress as a draft.
+- On an iPhone diary subpage, use the **Back** control near the bottom or swipe from right to left to return to the previous screen.
+- Use the **Dates** tab for countdowns and anniversaries. Give a day a name and date to remember an event or see how long until it happens.
+- Choose a companion under **Profile**.
 
-## 通过 Expo Go 预览原生原型
+| Companion | Costume |
+| --- | --- |
+| Han Pipi (憨批批) | Green dinosaur |
+| Han Didi (憨弟弟) | Red ladybug |
+| Han Meimei (憨妹妹) | Purple butterfly |
+| Han Jiejie (憨姐姐) | White cow |
+| Han Xuanxuan (憨轩轩) | Yellow bee |
+| Han Yueyue (憨悦悦) | Pink bunny |
 
-1. 在 iPhone 的 App Store 安装 [Expo Go](https://apps.apple.com/my/app/expo-go/id982107779)。
-2. iPhone 和这台 Windows 电脑连接同一个 Wi-Fi。
-3. 首次使用时，在电脑的 `mobile` 文件夹中执行 `npm ci` 安装依赖，再执行 `npx expo login --browser` 登录 Expo。手机 Expo Go 右上角头像中登录同一个账号。
-4. 双击本文件旁的 `启动日记.cmd`，保留终端与电脑运行；也可以在 `mobile` 文件夹打开终端执行 `npm start`。
-5. 打开 Expo Go，在首页的 **Development servers** 中点这台电脑上的日记项目。也可以用 iPhone 相机扫描终端二维码。下次继续写时，保持电脑服务运行，在同一 Wi-Fi 上从 Expo Go 首页点开即可。
+## Sync and backups
 
-当前 iOS Expo Go 要求电脑和手机均已登录同一 Expo 账号，见 [Expo 官方说明](https://expo.dev/changelog/expo-go-57-login)。这不需要 Apple 开发者付费会员。
+The web app saves entries and photos in IndexedDB on each device. While the diary is open and online, it syncs entries, photos, drafts, dates, and the selected pig to private cloud storage. Access to the cloud copy is controlled by the owner's ChatGPT sign-in. The service can read the stored data. If two devices change the same entry before reconnecting, the diary keeps both versions.
 
-公司、酒店或访客 Wi-Fi 可能隔离设备，导致扫码后连接失败；先换到同一普通家庭 Wi-Fi。若 Windows 弹出防火墙提示，允许 Node 在你信任的专用网络通信即可。
+For a manual copy, use **Profile → Export Full Backup**. On iPhone, choose **Save to Files**, select a folder in iCloud Drive, and tap **Save**. A backup contains your writing and photos in a readable JSON file. The maximum backup size is 40 MiB, including up to 24 MiB of photo data.
 
-## 第一版功能
+To bring an Expo Go diary into the web app, let the web diary finish syncing first and export a backup of any existing entries there. Export a full backup from Expo Go, then select that file under **Profile → Restore from Backup** in the web diary. Restoring replaces the current device's diary. The web app then merges the restored records with the previously synced cloud copy.
 
-- 一天多条记录，发生时间可回填，创建时间另存。
-- 随手写文字、添加照片、自动保留未发表草稿。
-- 编辑、删除、按日期与关键词回看。
-- 期待的倒数日与已经过去的纪念日。
-- 在「我的」选择陪伴小猪。青色恐龙叫憨批批，红色瓢虫叫憨弟弟，紫色蝴蝶叫憨妹妹，白色奶牛叫憨姐姐，黄色蜜蜂叫憨轩轩，粉色兔子叫憨悦悦。
-- 本机保存。备份包含文字、照片和设置，可导入恢复。
+## Run the web app locally
 
-## 本机与 iCloud
+From the repository root, serve the web files with Python.
 
-“我的”中选择导出备份，在 iOS 分享表选“存储到文件”，再选自己的 iCloud Drive。导入时选择之前的备份文件。当前是手动备份，不是 CloudKit 自动同步；打开分享表并不代表文件已经保存。
+```sh
+python -m http.server 8000 --bind 127.0.0.1 --directory offline-diary/dist
+```
 
-备份文件含私人文字和照片，请存到你自己的位置。当前没有额外的应用密码或端到端加密功能。
+Open [the local diary](http://localhost:8000) to exercise the interface and local storage. Private sync requires the authenticated Worker and its R2 bucket.
 
-当前预览版每条最多 12 张照片、每张最多 6 MB。完整备份文件最多 40 MB，其中照片合计最多 24 MB；超出时会明确提示，不能把此原型当作无限容量的长期相册。正式长期使用前应改进大容量备份。
+Build the Worker from its project directory.
 
-Expo Go 是预览工具：记录保存在该项目的手机沙盒中，卸载宿主或清除数据可能丢失。迁移到独立 App 前先导出备份，再在新 App 导入。此阶段建议先用测试内容熟悉功能。
+```sh
+cd offline-diary
+npm run build
+```
 
-## 以后成为独立 App
+The build produces `dist/server/index.js`. Deploy it to an owner-only ChatGPT Site with the R2 binding `BUCKET`. The Worker uses the visitor identity supplied by Sites to scope diary records and photo access to the signed-in account. [Web app source](offline-diary)
 
-可从 Windows 用 EAS 云端构建，按本人 iPhone 的设备登记做私人 Ad Hoc 安装，不需要公开上架。Apple 开发者签名通常需要付费会员（标准 99 美元/年或当地定价），签名会到期，需要维护。`mobile/eas.json` 只是准备好的配置，当前没有创建 EAS 项目、上传源代码、构建或签名。
+## Run the native Expo prototype
 
-## 验证与开发
+1. Install [Expo Go for iPhone](https://apps.apple.com/my/app/expo-go/id982107779) and connect the phone and computer to the same Wi-Fi network.
+2. In `mobile`, run `npm ci` and `npx expo login`. Sign in to the same Expo account from the profile icon in Expo Go. [Expo Go login instructions](https://expo.dev/changelog/expo-go-57-login)
+3. Run `npm start` in `mobile`, or double-click [Start Diary.cmd](Start%20Diary.cmd) on Windows. Keep the terminal and computer running during the preview.
+4. In Expo Go, tap the project under **Development servers**, or scan the QR code in the terminal. If the phone cannot reach the server, check whether the Wi-Fi network allows devices to communicate and Windows allows Node.js on that private network.
 
-在 `mobile` 中运行：
+The native prototype keeps its own data on the phone and supports full backup export and restore. Export a backup before clearing its data or uninstalling Expo Go. For a separately signed iPhone build, the repository includes an EAS internal distribution profile. An ad hoc iPhone build uses a paid Apple Developer account and a provisioning profile that includes the device. [EAS build configuration](mobile/eas.json) · [Expo internal distribution guide](https://docs.expo.dev/build/internal-distribution/)
 
-```powershell
+## Developer checks and artwork
+
+Run the native checks from `mobile` after installing dependencies.
+
+```sh
 npm run typecheck
 npm run lint
 npm test
 npx expo-doctor
 ```
 
-Windows 没有 iOS 模拟器。这些检查不能代替真机上的照片选择、iCloud Drive 分享/导入、键盘遮挡和关闭重开后的保存验证。
+The web app can be tested in Chrome and WebKit. For offline testing, open it online until offline setup finishes, then disconnect, reopen it, save an entry, and reconnect to check sync. Use a physical iPhone to check the photo picker, keyboard, gestures, and Files share sheet.
 
-日记里的六款角色图由内置 imagegen 参考用户提供的玩偶实拍生成。透明 PNG 保存在 `mobile/assets/mascots/real-plush/`，各款使用的参考照片编号、完整提示词和输出路径记录在 `Design/real-plush-prompts.json`。
-
-原生版通过了 TypeScript、lint、6 项数据领域测试、Expo Doctor 的 20 项检查和 iOS Hermes bundle 导出。离线网页版在 WebKit 和 Chrome 中验证了断网重开、保存、刷新读取和备份迁移。
+The six companion illustrations were generated from reference photos of the owner's plush toys. The design file records each prompt, its numbered references, and its output path. [Artwork prompts](Design/real-plush-prompts.json) · [Transparent PNG assets](mobile/assets/mascots/real-plush)

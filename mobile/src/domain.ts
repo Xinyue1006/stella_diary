@@ -113,7 +113,9 @@ export function validateDiaryData(value: unknown): DiaryData {
     const item = record(value, '倒数日');
     const title = boundedString(item.title, 80, '倒数日名称');
     if (!title.trim() || !isDateKey(item.date)) throw new Error('倒数日名称或日期无效');
-    return { id: identifier(item.id), title, date: item.date };
+    if (item.kind !== undefined && item.kind !== 'anniversary') throw new Error('日子类型无效');
+    const date = { id: identifier(item.id), title, date: item.date };
+    return item.kind === 'anniversary' ? { ...date, kind: 'anniversary' } : date;
   });
   if (new Set(entries.map(item => item.id)).size !== entries.length || new Set(countdowns.map(item => item.id)).size !== countdowns.length) {
     throw new Error('资料含有重复记录编号');

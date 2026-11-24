@@ -1,8 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
 import type { ComponentProps, PropsWithChildren } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Keyboard, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from './theme';
+import { BackPage } from './BackPage';
 
 type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -23,8 +25,16 @@ export function IconButton({ name, label, onPress, color = colors.green, disable
   return <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, disabled && styles.disabled]}><Icon name={name} color={color} /></Pressable>;
 }
 
-export function Screen({ children, header }: PropsWithChildren<{ header?: React.ReactNode }>) {
-  return <SafeAreaView edges={['top', 'left', 'right']} style={styles.screen}>{header}<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>{children}</ScrollView></SafeAreaView>;
+export function Screen({ children, title }: PropsWithChildren<{ title?: string }>) {
+  const router = useRouter();
+  const content = <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>{children}</ScrollView>;
+  if (!title) return <SafeAreaView edges={['top', 'left', 'right']} style={styles.screen}>{content}</SafeAreaView>;
+  function back() {
+    Keyboard.dismiss();
+    if (router.canGoBack()) router.back();
+    else router.navigate('/');
+  }
+  return <BackPage title={title} aboveTabBar onBack={back}>{content}</BackPage>;
 }
 
 export function PageHeading({ title, subtitle, accessory }: { title: string; subtitle: string; accessory?: React.ReactNode }) {

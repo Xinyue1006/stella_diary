@@ -20,6 +20,7 @@ export interface Entry extends EntryDraft {
 export interface Countdown {
   id: string;
   title: string;
+  kind?: 'anniversary';
   /** A local calendar date, without a UTC conversion. */
   date: string;
 }

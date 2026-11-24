@@ -97,6 +97,12 @@ function validateDraft(value) {
   return { text: text(draft.text, MAX_TEXT_LENGTH, '日记文字', true), occurredAt: timestamp(draft.occurredAt), photos };
 }
 
+function dayKind(kind) {
+  if (kind === undefined || kind === 'countdown') return {};
+  if (kind === 'anniversary') return { kind };
+  throw new Error('无法识别这个日子的类型');
+}
+
 function validateDiary(value) {
   const diary = record(value, '日记');
   if (diary.schemaVersion !== 1) throw new Error('无法识别这个版本的日记资料，原档已保留。');
@@ -111,7 +117,7 @@ function validateDiary(value) {
     const countdown = record(value, '倒数日');
     const title = text(countdown.title, 80, '倒数日名称');
     if (!title.trim()) throw new Error('倒数日名称不能为空');
-    return { id: identifier(countdown.id), title, date: dateKey(countdown.date) };
+    return { id: identifier(countdown.id), title, date: dateKey(countdown.date), ...dayKind(countdown.kind) };
   });
   if (new Set(entries.map(entry => entry.id)).size !== entries.length || new Set(countdowns.map(countdown => countdown.id)).size !== countdowns.length) throw new Error('资料含有重复记录编号');
   return { schemaVersion: 1, entries, countdowns, mascot: diary.mascot, draft: diary.draft === null ? null : validateDraft(diary.draft) };
@@ -303,15 +309,17 @@ export async function removeEntry(id, expectedEntry) {
   });
 }
 
-export async function saveCountdown(input, id) {
+export async function saveCountdown(input, id, expectedItem) {
   const title = text(input?.title, 80, '倒数日名称').trim();
   if (!title) throw new Error('请填写这个日子的名称');
   const date = dateKey(input.date);
   if (id !== undefined) identifier(id);
   return mutate(diary => {
-    if (id !== undefined && !diary.countdowns.some(item => item.id === id)) throw new Error('这个日子已不存在');
-    const countdown = { id: id ?? makeId('countdown'), title, date };
-    return { ...diary, countdowns: id === undefined ? [...diary.countdowns, countdown] : diary.countdowns.map(item => item.id === id ? countdown : item) };
+    const existing = id === undefined ? undefined : diary.countdowns.find(item => item.id === id);
+    if (id !== undefined && !existing && !expectedItem) throw new Error('这个日子已不存在');
+    const replace = existing && (!expectedItem || same(existing, expectedItem));
+    const countdown = { id: replace ? id : makeId('countdown'), title, date, ...dayKind(input.kind ?? existing?.kind) };
+    return { ...diary, countdowns: replace ? diary.countdowns.map(item => item.id === id ? countdown : item) : [...diary.countdowns, countdown] };
   });
 }
 

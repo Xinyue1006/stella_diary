@@ -2,13 +2,12 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { Alert, Image, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Countdown, Entry } from '../types';
 import { ActionButton, EmptyState, Icon, IconButton, PageHeading, Screen, SectionHeading } from './components';
 import { dayKey, daysFromToday, displayDate, displayTime, parseDay } from './dates';
 import { useDiaryContext } from './diaryContext';
 import { getMascot, mascots } from './mascots';
-import { ModalHeader } from './ModalHeader';
+import { BackPage } from './BackPage';
 import { colors } from './theme';
 
 function showError(title: string, error: unknown) {
@@ -19,23 +18,14 @@ function sortedEntries(entries: Entry[]): Entry[] {
   return [...entries].sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime());
 }
 
-function TabHeader({ title }: { title: string }) {
-  const router = useRouter();
-  function goBack() {
-    Keyboard.dismiss();
-    if (router.canGoBack()) router.back();
-    else router.navigate('/');
-  }
-  return <ModalHeader title={title} onBack={goBack} />;
-}
-
-function CountdownCard({ item, compact = false, onDelete }: { item: Countdown; compact?: boolean; onDelete?: () => void }) {
+function CountdownCard({ item, compact = false, onManage }: { item: Countdown; compact?: boolean; onManage?: () => void }) {
   const days = daysFromToday(item.date);
-  return <View style={[styles.countdownCard, compact && styles.countdownCompact]}>
-    <View style={styles.countdownIcon}><Icon name="flower-outline" size={25} /></View>
+  const anniversary = item.kind === 'anniversary';
+  return <View style={[styles.countdownCard, anniversary && styles.anniversaryCard, compact && styles.countdownCompact]}>
+    <View style={styles.countdownIcon}><Icon name={anniversary ? 'heart-outline' : 'flower-outline'} size={25} /></View>
     <View style={styles.flex}><Text style={styles.cardTitle}>{item.title}</Text><Text style={styles.small}>{parseDay(item.date).toLocaleDateString('zh-CN')}</Text></View>
-    <View style={styles.countdownNumber}><Text style={styles.daysNumber}>{days === 0 ? '今天' : Math.abs(days)}</Text>{days !== 0 ? <Text style={styles.daysLabel}>{days > 0 ? '天后' : '天前'}</Text> : null}</View>
-    {onDelete ? <IconButton name="ellipsis-horizontal" label={`管理${item.title}`} onPress={onDelete} /> : null}
+    <View style={styles.countdownNumber}>{anniversary && days < 0 && <Text style={styles.daysLabel}>已经</Text>}<Text style={styles.daysNumber}>{days === 0 ? '今天' : Math.abs(days)}</Text>{days !== 0 ? <Text style={styles.daysLabel}>{days > 0 ? '天后' : anniversary ? '天' : '天前'}</Text> : null}</View>
+    {onManage ? <IconButton name="ellipsis-horizontal" label={`管理${item.title}`} onPress={onManage} /> : null}
   </View>;
 }
 
@@ -57,10 +47,9 @@ function EntryCard({ entry, showDate = false }: { entry: Entry; showDate?: boole
     {canExpand ? <Pressable accessibilityRole="button" onPress={() => setExpanded(!expanded)} style={styles.expandButton}><Text style={styles.link}>{expanded ? '收起文字' : '展开全文'}</Text></Pressable> : null}
     {entry.photos.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.entryPhotos}>{entry.photos.map((photo, index) => <Pressable accessibilityRole="button" accessibilityLabel={`查看这条记录的第 ${index + 1} 张照片`} key={photo.id} onPress={() => setPreview(photo.uri)}><Image source={{ uri: photo.uri }} style={styles.entryPhoto} /></Pressable>)}</ScrollView> : null}
     <Modal visible={Boolean(preview)} transparent animationType="fade" onRequestClose={() => setPreview(null)}>
-      <SafeAreaView style={styles.preview}>
-        <ModalHeader title="照片" backLabel="返回日记" dark onBack={() => setPreview(null)} />
+      <BackPage title="照片" backLabel="返回日记" dark onBack={() => setPreview(null)}>
         {preview ? <Image source={{ uri: preview }} style={styles.previewImage} resizeMode="contain" /> : null}
-      </SafeAreaView>
+      </BackPage>
     </Modal>
   </View>;
 }
@@ -111,7 +100,7 @@ export function ReviewScreen() {
   const [searchFocused, setSearchFocused] = useState(false);
   const searching = Boolean(query.trim());
   const entries = searching ? data.entries.filter((entry) => entry.text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)) : sortedEntries(data.entries.filter((entry) => dayKey(entry.occurredAt) === reviewDate));
-  return <Screen header={<TabHeader title="回看" />}>
+  return <Screen title="回看">
     <View style={styles.searchBox}>
       <Icon name="search-outline" size={21} />
       <TextInput accessibilityLabel="搜索日记关键词" placeholder="找一段话，或一件小事" placeholderTextColor="#92978A" value={query} onChangeText={setQuery} onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)} style={styles.searchInput} returnKeyType="search" />
@@ -130,50 +119,89 @@ export function ReviewScreen() {
 export function CountdownsScreen() {
   const { data, saveCountdown, deleteCountdown } = useDiaryContext();
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<Countdown | null>(null);
+  const [kind, setKind] = useState<Countdown['kind']>();
   const [title, setTitle] = useState('');
   const [selectedDate, setDate] = useState<Date | null>(null);
   const date = selectedDate ?? new Date();
   const [busy, setBusy] = useState(false);
   const [androidPicker, setAndroidPicker] = useState(false);
   const saving = useRef(false);
+  const confirmingClose = useRef(false);
   const items = [...data.countdowns].sort((a, b) => {
     const aDays = daysFromToday(a.date), bDays = daysFromToday(b.date);
     if ((aDays < 0) !== (bDays < 0)) return aDays < 0 ? 1 : -1;
     return aDays < 0 ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date);
   });
+  function openForm(item?: Countdown) {
+    setEditing(item ?? null);
+    setTitle(item?.title ?? '');
+    setKind(item?.kind);
+    setDate(item ? parseDay(item.date) : null);
+    setAdding(true);
+  }
   function remove(item: Countdown) {
     Alert.alert(item.title, '要移除这个日子吗？', [{ text: '保留', style: 'cancel' }, { text: '移除', style: 'destructive', onPress: () => { void deleteCountdown(item.id).catch((error) => showError('没能移除', error)); } }]);
   }
+  function manage(item: Countdown) {
+    Alert.alert(item.title, undefined, [
+      { text: '修改', onPress: () => openForm(item) },
+      { text: '移除', style: 'destructive', onPress: () => remove(item) },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }
   async function save() {
-    if (!title.trim() || saving.current) return;
+    if (!title.trim() || saving.current || confirmingClose.current) return;
     saving.current = true;
     setBusy(true);
-    try { await saveCountdown({ title: title.trim(), date: dayKey(date) }); setAdding(false); setTitle(''); setDate(null); }
+    try {
+      await saveCountdown({ title: title.trim(), date: dayKey(date), ...(kind ? { kind } : {}) }, editing?.id);
+      setAdding(false);
+    }
     catch (error) { showError('还没保存好', error); }
     finally { saving.current = false; setBusy(false); }
   }
   function closeForm() {
-    if (saving.current) return;
+    if (saving.current || confirmingClose.current) return;
     Keyboard.dismiss();
     setAndroidPicker(false);
-    setAdding(false);
+    const changed = title !== (editing?.title ?? '') || kind !== editing?.kind ||
+      (selectedDate && dayKey(selectedDate) !== (editing?.date ?? dayKey()));
+    if (!changed) { setAdding(false); return; }
+    confirmingClose.current = true;
+    const reset = () => { confirmingClose.current = false; };
+    Alert.alert('放弃这次修改？', '这个日子还没保存。', [
+      { text: '继续填写', style: 'cancel', onPress: reset },
+      { text: '放弃并返回', style: 'destructive', onPress: () => { reset(); setAdding(false); } },
+    ], { cancelable: true, onDismiss: reset });
   }
-  return <Screen header={<TabHeader title="期待" />}>
-    <View style={styles.expectationBanner}><Icon name="sunny-outline" size={31} color="#917219" /><Text style={styles.expectationText}>给未来，留一点小小的期待。</Text></View>
-    <ActionButton title="放一个日子在这里" icon="add" onPress={() => setAdding(true)} />
-    {items.length ? items.map((item) => <CountdownCard key={item.id} item={item} onDelete={() => remove(item)} />) : <EmptyState title="有期待的时候，再放进来" detail="旅行、生日，或任何对你有意义的日子。\n已经过去的日子，也可以记住。" icon="gift-outline" />}
-    <Modal visible={adding} animationType="slide" presentationStyle="pageSheet" onRequestClose={closeForm}>
-      <SafeAreaView style={styles.modalSafe}>
-        <ModalHeader title="一个想记住的日子" onBack={closeForm} busy={busy} />
+  const countdowns = items.filter(item => !item.kind);
+  const anniversaries = items.filter(item => item.kind === 'anniversary');
+  return <Screen title="期待">
+    <ActionButton title="添加日子" icon="add" onPress={() => openForm()} />
+    {countdowns.length > 0 && <SectionHeading title="期待日" />}
+    {countdowns.map(item => <CountdownCard key={item.id} item={item} onManage={() => manage(item)} />)}
+    {anniversaries.length > 0 && <SectionHeading title="纪念日" />}
+    {anniversaries.map(item => <CountdownCard key={item.id} item={item} onManage={() => manage(item)} />)}
+    {!items.length && <EmptyState title="这里可以放期待日和纪念日" detail="为下一趟旅行倒数，也可以记下第一次见面的日子。" icon="gift-outline" />}
+    <Modal visible={adding} animationType="slide" presentationStyle="fullScreen" allowSwipeDismissal={false} onRequestClose={closeForm}>
+      <BackPage title={editing ? '修改日子' : '添加日子'} onBack={closeForm} disabled={busy}
+        action={<ActionButton title="保存日子" busy={busy} disabled={!title.trim()} onPress={() => { void save(); }} />}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.modalContent}>
+          <View style={styles.kindRow}>
+            {([undefined, 'anniversary'] as const).map(option => <Pressable key={option ?? 'countdown'}
+              accessibilityRole="button" accessibilityState={{ selected: kind === option, disabled: busy }}
+              disabled={busy} onPress={() => setKind(option)} style={[styles.kindOption, kind === option && styles.kindSelected]}>
+              <Text style={[styles.kindText, kind === option && styles.kindSelectedText]}>{option ? '纪念日' : '期待日'}</Text>
+            </Pressable>)}
+          </View>
           <Text style={styles.label}>这是什么日子？</Text>
-          <TextInput accessibilityLabel="日子名称" placeholder="例如：去看海" placeholderTextColor="#92978A" value={title} onChangeText={setTitle} maxLength={80} style={styles.titleInput} editable={!busy} />
+          <TextInput accessibilityLabel="日子名称" placeholder={kind ? '例如：第一次见面' : '例如：去看海'} placeholderTextColor="#92978A" value={title} onChangeText={setTitle} maxLength={80} style={styles.titleInput} editable={!busy} />
           <Text style={styles.label}>它在哪一天？</Text>
-          {Platform.OS === 'ios' ? <DateTimePicker accessibilityLabel="期待日日期" value={date} mode="date" display="inline" themeVariant="light" locale="zh-CN" disabled={busy} onChange={(_, next) => { if (next && !saving.current) setDate(next); }} /> : <ActionButton secondary disabled={busy} title={dayKey(date)} onPress={() => setAndroidPicker(true)} />}
+          {Platform.OS === 'ios' ? <DateTimePicker accessibilityLabel="日子的日期" value={date} mode="date" display="inline" themeVariant="light" locale="zh-CN" disabled={busy} onChange={(_, next) => { if (next && !saving.current) setDate(next); }} /> : <ActionButton secondary disabled={busy} title={dayKey(date)} onPress={() => setAndroidPicker(true)} />}
           {androidPicker ? <DateTimePicker mode="date" value={date} onChange={(_, next) => { setAndroidPicker(false); if (next && !saving.current) setDate(next); }} /> : null}
-          <ActionButton title="收好这个日子" busy={busy} disabled={!title.trim()} onPress={() => { void save(); }} />
         </ScrollView>
-      </SafeAreaView>
+      </BackPage>
     </Modal>
   </Screen>;
 }
@@ -191,8 +219,8 @@ export function SettingsScreen() {
   function confirmImport() {
     Alert.alert('从备份恢复？', '恢复会替换这台手机里现有的日记、照片、期待日和草稿。建议先导出一份当前备份。', [{ text: '取消', style: 'cancel' }, { text: '选择备份文件', style: 'destructive', onPress: () => { void run('import'); } }]);
   }
-  return <Screen header={<TabHeader title="我的小角落" />}>
-    <View style={styles.previewNotice}><Text style={styles.cardTitle}>下次怎么打开日记？</Text><Text style={styles.paragraph}>电脑运行「启动日记」，手机和电脑连同一个 Wi-Fi。打开 Expo Go，在首页的 Development servers 里点这台电脑就能继续写。</Text></View>
+  return <Screen title="我的小角落">
+    <View style={styles.previewNotice}><Text style={styles.cardTitle}>下次怎么打开日记？</Text><Text style={styles.paragraph}>电脑运行「Start Diary.cmd」，手机和电脑连同一个 Wi-Fi。打开 Expo Go，在首页的 Development servers 里点这台电脑就能继续写。</Text></View>
     <SectionHeading title="今天让谁陪你？" />
     <View style={styles.mascotGrid}>{mascots.map((mascot) => {
       const active = data.mascot === mascot.id;
@@ -228,10 +256,10 @@ const styles = StyleSheet.create({
   link: { fontSize: 14, color: colors.green, fontWeight: '600' },
   entryPhotos: { gap: 10, paddingTop: 4 },
   entryPhoto: { width: 108, height: 108, borderRadius: 15, backgroundColor: colors.line },
-  preview: { flex: 1, backgroundColor: '#171B16F5' },
   previewImage: { flex: 1, width: '100%' },
   countdownCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 19, paddingLeft: 18, paddingRight: 10, backgroundColor: colors.yellowLight, borderRadius: 23 },
   countdownCompact: { paddingRight: 20 },
+  anniversaryCard: { backgroundColor: colors.lavender },
   countdownIcon: { width: 43, height: 43, borderRadius: 16, backgroundColor: '#FFFFFFA0', alignItems: 'center', justifyContent: 'center' },
   cardTitle: { fontSize: 16, color: colors.ink, fontWeight: '600', flexShrink: 1, lineHeight: 23 },
   small: { fontSize: 13, lineHeight: 21, color: colors.muted, marginTop: 4 },
@@ -256,9 +284,11 @@ const styles = StyleSheet.create({
   calendarDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: colors.green },
   selectedDot: { backgroundColor: colors.yellow },
   todayLink: { alignSelf: 'center', paddingHorizontal: 20, minHeight: 44, justifyContent: 'center' },
-  expectationBanner: { minHeight: 123, borderRadius: 26, backgroundColor: colors.yellowLight, alignItems: 'center', justifyContent: 'center', padding: 22, gap: 13 },
-  expectationText: { fontSize: 16, color: colors.ink, lineHeight: 25, textAlign: 'center' },
-  modalSafe: { flex: 1, backgroundColor: colors.background },
+  kindRow: { flexDirection: 'row', gap: 5, padding: 4, borderRadius: 19, backgroundColor: colors.greenLight },
+  kindOption: { minHeight: 46, flex: 1, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+  kindSelected: { backgroundColor: colors.green },
+  kindText: { color: colors.green, fontSize: 16, fontWeight: '600' },
+  kindSelectedText: { color: colors.surface },
   modalContent: { padding: 24, gap: 22 },
   label: { fontSize: 16, color: colors.ink, fontWeight: '600' },
   titleInput: { fontSize: 18, color: colors.ink, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 17, padding: 17 },

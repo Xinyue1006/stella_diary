@@ -57,6 +57,18 @@ test('a complete backup includes photos from both entries and the unsaved draft'
   assert.throws(() => parseBackup(JSON.stringify(file)), /照片不完整/);
 });
 
+test('version-one backups preserve tagged anniversaries and untagged countdowns', () => {
+  const file = backup();
+  file.diary.countdowns = [
+    { id: 'upcoming', title: 'Trip', date: '2028-06-15' },
+    { id: 'first_day', title: 'First day', date: '2024-02-29', kind: 'anniversary' },
+  ];
+  assert.deepEqual(parseBackup(JSON.stringify(file)).diary.countdowns, file.diary.countdowns);
+  assert.throws(() => validateDiaryData({
+    ...file.diary, countdowns: [{ ...file.diary.countdowns[1], kind: 'invalid' }],
+  }), /日子类型无效/);
+});
+
 test('restore refuses duplicate records, path traversal IDs and damaged photo payloads', () => {
   const file = backup();
   file.diary.entries = [entry('same', '2026-11-24T09:00:00.000Z'), entry('same', '2026-11-24T10:00:00.000Z')];

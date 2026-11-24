@@ -1,14 +1,13 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, AppState, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert, AppState, Image, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { Entry, EntryDraft } from '../types';
 import { persistPhoto } from '../useDiary';
 import { ActionButton, Icon } from './components';
 import { dayKey, parseDay } from './dates';
 import { useDiaryContext } from './diaryContext';
-import { ModalHeader } from './ModalHeader';
+import { BackPage } from './BackPage';
 import { colors } from './theme';
 
 function blankDraft(date?: string): EntryDraft {
@@ -184,9 +183,8 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
   const occurredAt = new Date(draft.occurredAt);
 
   return <Modal visible animationType="slide" presentationStyle="fullScreen" allowSwipeDismissal={false} onRequestClose={systemBack}>
-    <SafeAreaView style={styles.safe}>
-      <ModalHeader title={entry ? '修改记录' : '写下一点'} onBack={() => { void close(); }} disabled={busy || picking} busy={busy} />
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <BackPage title={entry ? '修改记录' : '写下一点'} onBack={() => { void close(); }} disabled={busy || picking}
+        action={<ActionButton title={entry ? '保存修改' : '收好这条记录'} icon="checkmark" busy={busy} disabled={picking || (!draft.text.trim() && !draft.photos.length)} onPress={() => { void save(); }} />}>
         <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={styles.content}>
           <Text style={styles.label}>事情发生在</Text>
           {Platform.OS === 'ios' ? <View style={styles.pickerRow}><DateTimePicker accessibilityLabel="事情发生的日期" mode="date" display="compact" themeVariant="light" locale="zh-CN" value={occurredAt} disabled={busy || picking} onChange={(_, next) => { if (next) update({ occurredAt: next.toISOString() }); }} /><DateTimePicker accessibilityLabel="事情发生的时间" mode="time" display="compact" themeVariant="light" locale="zh-CN" value={occurredAt} disabled={busy || picking} onChange={(_, next) => { if (next) update({ occurredAt: next.toISOString() }); }} /></View> : <View style={styles.pickerRow}><ActionButton secondary disabled={busy || picking} title={dayKey(occurredAt)} onPress={() => setAndroidPicker('date')} /><ActionButton secondary disabled={busy || picking} title={occurredAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })} onPress={() => setAndroidPicker('time')} /></View>}
@@ -196,29 +194,23 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
           {draft.photos.length ? <View style={styles.photoGrid}>{draft.photos.map((photo, index) => <View key={photo.id} style={styles.photoWrap}><Pressable accessibilityRole="button" accessibilityLabel={`查看第 ${index + 1} 张照片`} disabled={busy || picking} onPress={() => { Keyboard.dismiss(); setPreview(photo.uri); }}><Image source={{ uri: photo.uri }} style={styles.photo} /></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`移除第 ${index + 1} 张照片`} disabled={busy || picking} style={styles.removePhoto} onPress={() => update({ photos: latest.current.photos.filter((item) => item.id !== photo.id) })}><Icon name="close" size={18} color={colors.ink} /></Pressable></View>)}</View> : null}
           <ActionButton secondary title={picking ? '正在加入照片…' : '加几张照片'} busy={picking} disabled={busy} onPress={() => { void addPhotos(); }} icon="image-outline" />
           <Text style={styles.status} accessibilityLiveRegion="polite">{status}</Text>
-          {!entry ? <Text style={styles.hint}>点左上角「返回」，会先把内容存成草稿。</Text> : null}
+          {!entry ? <Text style={styles.hint}>返回时会先保存草稿。</Text> : null}
         </ScrollView>
-        <View style={styles.footer}><ActionButton title={entry ? '保存修改' : '收好这条记录'} icon="checkmark" busy={busy} disabled={picking || (!draft.text.trim() && !draft.photos.length)} onPress={() => { void save(); }} /></View>
-      </KeyboardAvoidingView>
-      <Modal visible={Boolean(preview)} transparent animationType="fade" presentationStyle="overFullScreen" allowSwipeDismissal={false} onRequestClose={() => setPreview(null)}><SafeAreaView style={styles.preview}><ModalHeader title="照片" backLabel="返回日记" dark onBack={() => setPreview(null)} />{preview ? <Image source={{ uri: preview }} style={styles.previewImage} resizeMode="contain" /> : null}</SafeAreaView></Modal>
-    </SafeAreaView>
+      </BackPage>
+      <Modal visible={Boolean(preview)} transparent animationType="fade" presentationStyle="overFullScreen" allowSwipeDismissal={false} onRequestClose={() => setPreview(null)}><BackPage title="照片" backLabel="返回日记" dark onBack={() => setPreview(null)}>{preview ? <Image source={{ uri: preview }} style={styles.previewImage} resizeMode="contain" /> : null}</BackPage></Modal>
   </Modal>;
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.background },
-  flex: { flex: 1 },
   content: { padding: 24, paddingBottom: 30, gap: 16 },
   label: { fontSize: 15, fontWeight: '600', color: colors.ink },
   pickerRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
   hint: { fontSize: 14, lineHeight: 22, color: colors.muted },
   editor: { minHeight: 240, fontSize: 18, lineHeight: 30, color: colors.ink, padding: 0 },
-  footer: { paddingHorizontal: 24, paddingBottom: 12, paddingTop: 12, borderTopWidth: 1, borderColor: colors.line },
   status: { fontSize: 13, color: colors.muted, textAlign: 'center', lineHeight: 21 },
   photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   photoWrap: { width: 92, height: 92 },
   photo: { width: 92, height: 92, borderRadius: 16, backgroundColor: colors.line },
   removePhoto: { position: 'absolute', top: -5, right: -5, width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.line },
-  preview: { flex: 1, backgroundColor: '#171B16F5' },
   previewImage: { flex: 1, width: '100%' },
 });

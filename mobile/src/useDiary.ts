@@ -4,7 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { allPhotos, emptyDiary, isDateKey, makeId, mapDiaryPhotos, MAX_BACKUP_BYTES, MAX_PHOTO_BYTES, MAX_TOTAL_PHOTO_BYTES, parseBackup, utf8ByteLength, validateDiaryData, validateDraft } from './domain';
-import type { DiaryBackup, DiaryData, EntryDraft, MascotId, Photo } from './types';
+import type { Countdown, DiaryBackup, DiaryData, EntryDraft, MascotId, Photo } from './types';
 
 const STORAGE_KEY = 'sunflower-diary.v1';
 const PREVIOUS_KEY = 'sunflower-diary.previous.v1';
@@ -135,12 +135,12 @@ export function useDiary() {
     await commit({ ...dataRef.current, entries: dataRef.current.entries.filter(item => item.id !== id) });
   }), [commit]);
 
-  const saveCountdown = useCallback((input: { title: string; date: string }, id?: string) => serial(async () => {
+  const saveCountdown = useCallback((input: Omit<Countdown, 'id'>, id?: string) => serial(async () => {
     assertLoaded();
     const title = input.title.trim();
     if (!title || title.length > 80 || !isDateKey(input.date)) throw new Error('请填写 80 字内的名称和有效日期');
     if (id && !dataRef.current.countdowns.some(item => item.id === id)) throw new Error('这个倒数日已不存在');
-    const countdown = { id: id ?? makeId('countdown'), title, date: input.date };
+    const countdown = { ...input, id: id ?? makeId('countdown'), title };
     const countdowns = id ? dataRef.current.countdowns.map(item => item.id === id ? countdown : item) : [...dataRef.current.countdowns, countdown];
     await commit({ ...dataRef.current, countdowns });
   }), [assertLoaded, commit]);
