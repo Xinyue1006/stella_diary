@@ -1,0 +1,8 @@
+.DS_Store
+Thumbs.db
+.env
+.env.local
+offline-diary/.openai/
+Design/*qr*
+Design/pig-reference.png
+sunflower-diary-*.json

@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "小猪向阳日记",
+    "slug": "sunflower-pig-diary",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.sunflowerdiary.privatejournal",
+      "infoPlist": {
+        "CFBundleAllowMixedLocalizations": true,
+        "NSPhotoLibraryUsageDescription": "选择你想放进日记的照片。"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "选择你想放进日记的照片。",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      "expo-document-picker",
+      "expo-font"
+    ],
+    "scheme": "sunflowerdiary",
+    "platforms": [
+      "ios"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
