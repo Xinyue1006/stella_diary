@@ -1,5 +1,5 @@
 // Bump this version whenever the installed application changes.
-const VERSION = 'd6ed0b82652d6442-root';
+const VERSION = 'private-sync-v1';
 const PREFIX = 'sunflower-diary-' + new URL(self.registration.scope).pathname + ':';
 const CACHE = PREFIX + VERSION;
 const root = new URL('./', self.location.href);
@@ -7,7 +7,7 @@ const root = new URL('./', self.location.href);
 const shell = root.href;
 const htmlPath = new URL('index.html', root).pathname;
 const paths = [
-  './', 'styles.css', 'app.js', 'storage.js', 'mascots.js', 'offline.js',
+  './', 'styles.css', 'app.js', 'storage.js', 'sync.js', 'merge.js', 'mascots.js', 'offline.js',
   'manifest.webmanifest', 'assets/apple-touch-icon.png', 'assets/icon-192.png', 'assets/icon-512.png',
   ...['dinosaur', 'ladybug', 'butterfly', 'cow', 'bee', 'bunny'].map(id => 'assets/' + id + '.webp')
 ];
@@ -27,6 +27,7 @@ self.addEventListener('install', event => {
       }
       await cache.put(url, response);
     }
+    await self.skipWaiting();
   })());
 });
 

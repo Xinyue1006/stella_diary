@@ -1,4 +1,5 @@
-/* Local-only IndexedDB storage. Backup files remain compatible with the native app. */
+/* IndexedDB remains the source for offline reads and writes. */
+import { emptyDiary, mergeDiary, preserveDraft, same } from './merge.js';
 export const MAX_BACKUP_BYTES = 40 * 1024 * 1024;
 export const MAX_PHOTO_BYTES = 6 * 1024 * 1024;
 export const MAX_TOTAL_PHOTO_BYTES = 24 * 1024 * 1024;
@@ -11,8 +12,9 @@ const MASCOTS = ['dinosaur', 'ladybug', 'butterfly', 'cow', 'bee', 'bunny'];
 let databasePromise;
 const objectUrls = new Map();
 
-function emptyDiary() {
-  return { schemaVersion: 1, entries: [], countdowns: [], mascot: 'dinosaur', draft: null };
+function committed(diary) {
+  globalThis.dispatchEvent(new Event('diary-local-write'));
+  return diary;
 }
 
 function makeId(prefix) {
@@ -119,11 +121,11 @@ function mapPhotos(diary, map) {
   return { ...diary, entries: diary.entries.map(entry => ({ ...entry, photos: entry.photos.map(map) })), draft: diary.draft ? { ...diary.draft, photos: diary.draft.photos.map(map) } : null };
 }
 
-function localDiary(diary) {
+export function localDiary(diary) {
   return mapPhotos(validateDiary(diary), photo => ({ id: photo.id, uri: `idb-photo://${photo.id}` }));
 }
 
-function allPhotos(diary) {
+export function allPhotos(diary) {
   return Array.from(new Map([...diary.entries.flatMap(entry => entry.photos), ...(diary.draft?.photos ?? [])].map(photo => [photo.id, photo])).values());
 }
 
@@ -167,7 +169,7 @@ async function mutate(transform) {
       state.put(next, 'diary');
       done(next);
     }, fail);
-  });
+  }).then(committed);
 }
 
 export async function loadDiary() {
@@ -177,27 +179,128 @@ export async function loadDiary() {
   });
 }
 
-export async function saveDraft(draft) {
-  const checked = draft === null ? null : validateDraft(draft);
-  return mutate(diary => ({ ...diary, draft: checked }));
+const checkpointKey = 'cloud-checkpoint';
+const intentKey = 'cloud-upload';
+
+function readStateKeys(state, keys, action, fail) {
+  const requests = keys.map(key => state.get(key));
+  onSuccess(requests[requests.length - 1], () => action(...requests.map(request => request.result)), fail);
 }
 
-export async function saveEntry(draft, id) {
+function newCheckpoint(owner) {
+  return { owner, version: null, diary: emptyDiary(), stamp: makeId('checkpoint') };
+}
+
+// A restored backup is a new input to the first merge. Missing records in that
+// backup are not deletions from the cloud. Keep the original account binding.
+function resetSyncBase(state, fail) {
+  onSuccess(state.get(checkpointKey), base => {
+    if (base) state.put(newCheckpoint(base.owner), checkpointKey);
+    state.delete(intentKey);
+  }, fail);
+}
+
+export async function readSyncState(owner) {
+  const db = await openDatabase();
+  return transact(db, ['state'], owner ? 'readwrite' : 'readonly', (transaction, done, fail) => {
+    const state = transaction.objectStore('state');
+    readStateKeys(state, ['diary', checkpointKey, intentKey], (value, base, intent) => {
+      const local = value === undefined ? emptyDiary() : localDiary(value);
+      if (owner && base && owner !== base.owner) throw new Error('请登录之前同步这本日记的 ChatGPT 账号。本机资料已保留。');
+      if (owner && !base) {
+        base = newCheckpoint(owner);
+        state.put(base, checkpointKey);
+      }
+      done({ local, base, intent });
+    }, fail);
+  });
+}
+
+export async function rememberUpload(snapshot, target) {
+  const db = await openDatabase();
+  return transact(db, ['state'], 'readwrite', (transaction, done, fail) => {
+    const state = transaction.objectStore('state');
+    onSuccess(state.get(checkpointKey), base => {
+      if (base?.stamp !== snapshot.base.stamp) { done(false); return; }
+      state.put({ before: snapshot.local, target }, intentKey);
+      done(true);
+    }, fail);
+  });
+}
+
+// Commit cloud metadata and its downloaded content together. Rebase changes
+// typed while network requests were in flight onto the acknowledged snapshot.
+export async function applySyncedDiary(snapshot, target, version) {
+  const db = await openDatabase();
+  return transact(db, ['state'], 'readwrite', (transaction, done, fail) => {
+    const state = transaction.objectStore('state');
+    readStateKeys(state, ['diary', checkpointKey], (value, base) => {
+      if (base?.stamp !== snapshot.base.stamp) { done(null); return; }
+      const current = value === undefined ? emptyDiary() : localDiary(value);
+      const next = same(current, snapshot.local) ? target : localDiary(mergeDiary(snapshot.local, current, target));
+      if (!same(current, next)) {
+        state.put(current, 'previous');
+        state.put(next, 'diary');
+      }
+      state.put({ owner: base.owner, version, diary: target, stamp: makeId('checkpoint') }, checkpointKey);
+      state.delete(intentKey);
+      done({ diary: next, pending: !same(next, target) });
+    }, fail);
+  });
+}
+
+export async function readPhotoBlob(id) {
+  const db = await openDatabase();
+  return transact(db, ['photos'], 'readonly', (transaction, done, fail) => {
+    onSuccess(transaction.objectStore('photos').get(identifier(id)), value => done(value?.blob), fail);
+  });
+}
+
+export async function storeDownloadedPhoto(id, blob) {
+  if (!(blob instanceof Blob) || !blob.size || blob.size > MAX_PHOTO_BYTES || blob.type === 'text/html') {
+    throw new Error('有一张云端照片未下载完整。请重新同步。');
+  }
+  const db = await openDatabase();
+  return transact(db, ['photos'], 'readwrite', (transaction, done, fail) => {
+    const store = transaction.objectStore('photos');
+    onSuccess(store.getKey(identifier(id)), key => {
+      if (key === undefined) store.add({ id, blob });
+      done();
+    }, fail);
+  });
+}
+
+export async function saveDraft(draft, expectedDraft) {
+  const checked = draft === null ? null : validateDraft(draft);
+  return mutate(diary => {
+    const stale = expectedDraft !== undefined && !same(diary.draft, expectedDraft);
+    if (stale && checked === null) return diary;
+    const next = stale && !same(diary.draft, checked) ? preserveDraft(diary, diary.draft) : diary;
+    return { ...next, draft: checked };
+  });
+}
+
+export async function saveEntry(draft, id, expectedEntry, expectedDraft) {
   const checked = validateDraft(draft);
   if (!checked.text.trim() && !checked.photos.length) throw new Error('写一句话或加一张照片，就可以保存了');
   if (id !== undefined) identifier(id);
   return mutate(diary => {
-    const existing = id === undefined ? undefined : diary.entries.find(entry => entry.id === id);
-    if (id !== undefined && !existing) throw new Error('这条记录已不存在，请重新打开');
+    let existing = id === undefined ? undefined : diary.entries.find(entry => entry.id === id);
+    if (id !== undefined && !existing && !expectedEntry) throw new Error('这条记录已不存在，请重新打开');
+    if (expectedEntry && !same(existing, expectedEntry)) existing = undefined;
     const now = new Date().toISOString();
     const entry = { ...checked, id: existing?.id ?? makeId('entry'), createdAt: existing?.createdAt ?? now, updatedAt: now };
-    return { ...diary, entries: existing ? diary.entries.map(item => item.id === id ? entry : item) : [...diary.entries, entry], draft: existing ? diary.draft : null };
+    const clearDraft = id === undefined && (expectedDraft === undefined || same(diary.draft, expectedDraft));
+    return { ...diary, entries: existing ? diary.entries.map(item => item.id === id ? entry : item) : [...diary.entries, entry], draft: clearDraft ? null : diary.draft };
   });
 }
 
-export async function removeEntry(id) {
+export async function removeEntry(id, expectedEntry) {
   identifier(id);
-  return mutate(diary => ({ ...diary, entries: diary.entries.filter(entry => entry.id !== id) }));
+  return mutate(diary => {
+    if (expectedEntry && !same(diary.entries.find(entry => entry.id === id), expectedEntry)) throw new Error('这条记录有新的改动，请重新查看后再删除。');
+    return { ...diary, entries: diary.entries.filter(entry => entry.id !== id) };
+  });
 }
 
 export async function saveCountdown(input, id) {
@@ -212,9 +315,12 @@ export async function saveCountdown(input, id) {
   });
 }
 
-export async function removeCountdown(id) {
+export async function removeCountdown(id, expectedItem) {
   identifier(id);
-  return mutate(diary => ({ ...diary, countdowns: diary.countdowns.filter(item => item.id !== id) }));
+  return mutate(diary => {
+    if (expectedItem && !same(diary.countdowns.find(item => item.id === id), expectedItem)) throw new Error('这个日子有新的改动，请重新查看后再删除。');
+    return { ...diary, countdowns: diary.countdowns.filter(item => item.id !== id) };
+  });
 }
 
 export async function selectMascot(id) {
@@ -325,9 +431,10 @@ export async function importBackup(file) {
       const photos = transaction.objectStore('photos');
       for (const photo of blobs) photos.add(photo);
       state.put(restored, 'diary');
+      resetSyncBase(state, fail);
       done(restored);
     }, fail);
-  });
+  }).then(committed);
 }
 
 export async function exportBackup() {
@@ -374,8 +481,9 @@ export async function restorePrevious() {
       onSuccess(state.get('diary'), current => {
         if (current !== undefined) state.put(current, 'unreadable');
         state.put(restored, 'diary');
+        resetSyncBase(state, fail);
         done(restored);
       }, fail);
     }, fail);
-  });
+  }).then(committed);
 }

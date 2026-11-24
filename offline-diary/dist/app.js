@@ -1,5 +1,6 @@
 import * as storage from './storage.js';
 import { mascots } from './mascots.js';
+import { startSync } from './sync.js';
 
 const app = document.querySelector('#app');
 const header = document.querySelector('#page-header');
@@ -19,7 +20,9 @@ const state = {
   error: '',
   navigation: null,
   dialogOpen: false,
+  sync: { state: 'pending', message: '正在连接私人日记…', lastSyncedAt: null },
 };
+let requestSync;
 let renderVersion = 0;
 let mutationVersion = 0;
 let appliedMutation = 0;
@@ -41,6 +44,7 @@ const paths = {
   flower: '<path d="M12 20v-5M12 18c-4-4-6-1-5 0 1 2 5 2 5 2M12 19c4-4 6-1 5 0-1 2-5 2-5 2"/><path d="M12 4c-4-5-7 2-3 4-6 1-3 7 1 5 1 5 7 3 5-1 5 0 6-6 1-6 0-4-4-5-4-2Z"/><circle cx="12" cy="9" r="2"/>',
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
   upload: '<path d="M12 16V4m-5 5 5-5 5 5M4 16v5h16v-5"/>',
+  cloud: '<path d="M6.5 18a4.5 4.5 0 0 1-.5-9 6 6 0 0 1 11.4-1 5 5 0 0 1 .6 10H6.5Z"/>',
 };
 
 function icon(name) {
@@ -173,10 +177,16 @@ function cancelDraftTimer() {
 async function persistDraft(editor) {
   if (editor.id || editor.closing) return;
   const version = editor.version;
-  const snapshot = copy(editor.draft);
+  const snapshot = hasContent(editor.draft) ? copy(editor.draft) : null;
+  const write = editor.draftWrite.catch(() => {}).then(async () => {
+    if (version <= editor.persistedVersion) return;
+    await mutate(() => storage.saveDraft(snapshot, editor.expectedDraft));
+    editor.expectedDraft = snapshot;
+    editor.persistedVersion = version;
+  });
+  editor.draftWrite = write;
   try {
-    await mutate(() => storage.saveDraft(hasContent(snapshot) ? snapshot : null));
-    editor.persistedVersion = Math.max(editor.persistedVersion, version);
+    await write;
     if (activeEditor() === editor && editor.version === version && !editor.closing) setDraftStatus('草稿已保存在本机');
   } catch (error) {
     if (activeEditor() === editor && !editor.closing) setDraftStatus('草稿还没存好，先留在这里再试一次。', true);
@@ -281,11 +291,9 @@ async function requestBack(depth = state.views.length - 1) {
     }
     await runBusy(async () => {
       cancelDraftTimer();
-      view.closing = true;
-      const snapshot = copy(view.draft);
       try {
-        await mutate(() => storage.saveDraft(hasContent(snapshot) ? snapshot : null));
-        view.persistedVersion = view.version;
+        await persistDraft(view);
+        view.closing = true;
       }
       catch (error) { view.closing = false; setDraftStatus('草稿还没存好，内容仍在这里。', true); throw error; }
       finishBack(depth);
@@ -298,7 +306,7 @@ function openEditor(id, date) {
   if (id && !entry) { toast('这条记录暂时没有找到。', true); return; }
   const savedDraft = state.data.draft;
   const draft = entry ? { text: entry.text, occurredAt: entry.occurredAt, photos: copy(entry.photos) } : savedDraft && hasContent(savedDraft) ? copy(savedDraft) : newDraft(date);
-  openView({ kind: 'editor', id: entry?.id, draft, initial: JSON.stringify(draft), timeInput: localDateTime(draft.occurredAt), version: 0, persistedVersion: 0, completed: false, closing: false });
+  openView({ kind: 'editor', id: entry?.id, originalEntry: entry, expectedDraft: savedDraft, draftWrite: Promise.resolve(), draft, initial: JSON.stringify(draft), timeInput: localDateTime(draft.occurredAt), version: 0, persistedVersion: 0, completed: false, closing: false });
 }
 
 async function saveEditor(depth = state.views.length - 1) {
@@ -311,7 +319,10 @@ async function saveEditor(depth = state.views.length - 1) {
   await runBusy(async () => {
     cancelDraftTimer();
     editor.closing = true;
-    try { await mutate(() => storage.saveEntry(snapshot, editor.id)); }
+    try {
+      await editor.draftWrite.catch(() => {});
+      await mutate(() => storage.saveEntry(snapshot, editor.id, editor.originalEntry, editor.expectedDraft));
+    }
     catch (error) { editor.closing = false; setDraftStatus('这次还没保存好，内容仍在这里。', true); throw error; }
     editor.completed = true;
     state.reviewDate = dayKey(snapshot.occurredAt);
@@ -366,7 +377,7 @@ function renderToday() {
   const entries = state.data.entries.filter((entry) => dayKey(entry.occurredAt) === dayKey()).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
   const nextDay = [...state.data.countdowns].filter((item) => dateDifference(item.date) >= 0).sort((a, b) => a.date.localeCompare(b.date))[0];
   const draft = state.data.draft && hasContent(state.data.draft);
-  return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div></div><section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p>${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}</div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section><div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${entries.length ? `<span class="muted">${entries.length} 条 · 按发生时间</span>` : ''}</div>${entries.length ? entries.map((entry) => entryMarkup(entry)).join('') : emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div><aside class="journal-aside"><div class="section-heading"><h2>期待的日子</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有期待日</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
+  return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div><button type="button" class="sync-shortcut" data-action="show-sync" aria-label="查看私人同步状态">${icon('cloud')}<span data-sync-label></span></button></div><section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p>${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}</div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section><div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${entries.length ? `<span class="muted">${entries.length} 条 · 按发生时间</span>` : ''}</div>${entries.length ? entries.map((entry) => entryMarkup(entry)).join('') : emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div><aside class="journal-aside"><div class="section-heading"><h2>期待的日子</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有期待日</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
 }
 
 function calendarMarkup() {
@@ -410,12 +421,70 @@ function offlineStatusMarkup() {
   return `<div class="status-line"><span class="status-pill">${installed ? '已从主屏幕打开' : '正在浏览器里预览'}</span><span class="status-pill" data-offline-indicator>${window.diaryOfflineReady ? '离线已就绪' : '正在准备离线'}</span></div>`;
 }
 
+const syncLabels = {
+  pending: '等待同步', syncing: '同步中', synced: '已同步',
+  offline: '离线', signin: '需要登录', error: '同步未完成',
+};
+
+function updateSyncStatus(status) {
+  state.sync = status;
+  for (const label of app.querySelectorAll('[data-sync-label]')) {
+    label.textContent = syncLabels[status.state] || syncLabels.pending;
+    label.dataset.state = status.state;
+  }
+  const message = app.querySelector('[data-sync-message]');
+  if (message && message.textContent !== status.message) message.textContent = status.message;
+  const timestamp = app.querySelector('[data-sync-time]');
+  if (timestamp) {
+    timestamp.hidden = !status.lastSyncedAt;
+    if (status.lastSyncedAt) {
+      const date = new Date(status.lastSyncedAt);
+      const day = dayKey(date) === dayKey() ? '今天' : date.toLocaleDateString('zh-CN');
+      timestamp.textContent = `上次同步于${day} ${timeLabel(date)}`;
+    }
+  }
+  const signin = app.querySelector('[data-sync-signin]');
+  if (signin) signin.hidden = status.state !== 'signin';
+}
+
+function receiveSyncedDiary(diary) {
+  state.data = diary;
+  // Keep any open editor, date picker, photo viewer or search field in place.
+  if (currentView() || state.loading || state.error) return;
+  if (state.tab === 'review' && app.querySelector('[data-review-results]')) {
+    app.querySelector('[data-calendar]').innerHTML = calendarMarkup();
+    app.querySelector('[data-review-results]').innerHTML = reviewResults();
+    void hydratePhotos();
+  } else {
+    render();
+  }
+}
+
 function renderSettings() {
-  return `<section class="page page-stack"><div class="page-heading"><div><p class="eyebrow">只属于你的小角落</p><h1>我的</h1><p class="muted">陪伴的样子，由你来选。</p></div></div><section class="settings-card"><div class="section-heading"><h2>今天让谁陪你？</h2></div><div class="mascot-grid">${mascots.map((mascot) => `<button type="button" class="mascot-card${mascot.id === state.data.mascot ? ' is-selected' : ''}" data-action="select-mascot" data-id="${escape(mascot.id)}" aria-pressed="${mascot.id === state.data.mascot}" style="--mascot-color:${escape(mascot.color)}"><img class="mascot-thumb" src="${escape(mascot.image)}" alt=""><span>${escape(mascot.name)}${mascot.id === state.data.mascot ? icon('check') : ''}</span></button>`).join('')}</div></section><section class="settings-card backup-card"><div class="section-heading"><h2>把回忆收好</h2></div><p>日记和照片保存在这台手机的本机空间。导出一份备份，就可以放进自己的 iCloud Drive。</p><div class="notice"><strong>文字、照片、期待日和草稿一起备份</strong><p>点「导出备份」，在分享菜单选「存储到文件」，再选 iCloud Drive。这里是手动备份，不会自动同步。</p></div><div class="button-row">${button('导出完整备份', 'export-backup', { className: 'primary', symbol: 'download' })}${button('从备份恢复', 'choose-backup', { className: 'secondary', symbol: 'upload' })}</div><input id="backup-file" type="file" accept="application/json,.json" class="sr-only" hidden><p class="field-help">这一版每张照片最多 6 MB，完整备份中的照片合计最多 24 MB，备份文件最多 40 MB。先用少量照片体验。</p></section><section class="settings-card"><div class="section-heading"><h2>放到 iPhone 主屏幕</h2></div>${offlineStatusMarkup()}<ol class="install-steps"><li>在 Safari 打开日记，点「分享」，选「添加到主屏幕」。</li><li>从主屏幕上的小猪图标打开一次，保持联网，等上方出现「离线已就绪」。</li><li>之后便可以断网打开、写日记和回看本机照片。</li></ol><p class="field-help">建议先添加到主屏幕，再开始日常记录。Safari 和主屏幕 App 的保存空间可能分开；如果之前已经写过，先导出备份，再到主屏幕 App 里恢复并核对。</p><p class="field-help">如果清除了网站资料、卸载或换手机，需要用你保存的备份恢复。记得偶尔给回忆留一份副本。</p></section><div class="quiet-note">${icon('flower')}<p>想起来就写，想歇一歇也可以。<br>这里会为你留着位置。</p></div></section>`;
+  return `<section class="page page-stack">
+    <div class="page-heading"><div><p class="eyebrow">只属于你的小角落</p><h1>我的</h1></div></div>
+    <section class="settings-card" aria-labelledby="sync-heading">
+      <div class="section-heading"><h2 id="sync-heading">私人同步</h2><span class="status-pill" data-sync-label></span></div>
+      <p>在电脑和 iPhone 用同一个 ChatGPT 账号打开这本日记。文字、照片、草稿、期待日和小猪都会自动同步。</p>
+      <div class="sync-detail"><p data-sync-message role="status"></p><small class="field-help" data-sync-time hidden></small></div>
+      <div class="sync-actions">${button('立即同步', 'sync-now', { className: 'secondary', symbol: 'cloud' })}<a class="button primary" href="/signin-with-chatgpt?return_to=%2F" target="_top" data-sync-signin hidden>登录 ChatGPT</a></div>
+    </section>
+    <section class="settings-card"><div class="section-heading"><h2>今天让谁陪你？</h2></div><div class="mascot-grid">${mascots.map((mascot) => `<button type="button" class="mascot-card${mascot.id === state.data.mascot ? ' is-selected' : ''}" data-action="select-mascot" data-id="${escape(mascot.id)}" aria-pressed="${mascot.id === state.data.mascot}" style="--mascot-color:${escape(mascot.color)}"><img class="mascot-thumb" src="${escape(mascot.image)}" alt=""><span>${escape(mascot.name)}${mascot.id === state.data.mascot ? icon('check') : ''}</span></button>`).join('')}</div></section>
+    <section class="settings-card backup-card"><div class="section-heading"><h2>完整备份</h2></div>
+      <p>想自己留一份副本，可以把文字、照片、草稿、期待日和小猪一起导出到 iCloud Drive。</p>
+      <div class="button-row">${button('导出完整备份', 'export-backup', { className: 'primary', symbol: 'download' })}${button('从备份恢复', 'choose-backup', { className: 'secondary', symbol: 'upload' })}</div>
+      <input id="backup-file" type="file" accept="application/json,.json" class="sr-only" hidden>
+      <p class="field-help">每张照片最多 6 MB。完整备份中的照片合计最多 24 MB，备份文件最多 40 MB。</p>
+    </section>
+    <section class="settings-card"><div class="section-heading"><h2>放到 iPhone 主屏幕</h2></div>${offlineStatusMarkup()}
+      <ol class="install-steps"><li>在 Safari 打开日记，点「分享」，选「添加到主屏幕」。</li><li>从主屏幕上的小猪图标打开一次，保持联网，等上方出现「离线已就绪」。</li><li>之后随时可以断网写，联网再打开日记就会同步。</li></ol>
+      <p class="field-help">如果以前在 Safari 写过，先在那里等到「已同步」，再打开主屏幕上的日记。</p>
+    </section>
+  </section>`;
 }
 
 function renderEditor(editor) {
-  return `<section class="page editor-view"><form id="entry-form" class="editor-form"><div class="field"><label class="field-label" for="occurred-at">事情发生在</label><input class="field-control" id="occurred-at" name="occurredAt" type="datetime-local" value="${escape(editor.timeInput)}" required step="60"><p class="field-help">现在想起以前的事，也可以改成当时的日期和时间。</p></div><div class="field"><label class="field-label sr-only" for="entry-text">日记内容</label><textarea class="field-control textarea" id="entry-text" name="text" rows="9" maxlength="50000" placeholder="刚刚发生了什么，或是突然想起了什么…">${escape(editor.draft.text)}</textarea></div><div data-editor-photos>${photoStrip(editor.draft.photos, true)}</div><div class="editor-toolbar">${button('加几张照片', 'choose-photo', { className: 'secondary', symbol: 'image' })}<span class="field-help">${editor.draft.photos.length}/12 张</span></div><input id="entry-photos" type="file" accept="image/*" multiple class="sr-only" hidden><div class="editor-footer"><p class="draft-status" data-draft-status role="status">${editor.id ? '修改后，点「保存修改」收好。' : '草稿会自动保存在本机；返回时也会先收好草稿。'}</p><button type="submit" class="button primary">${icon('check')}<span>${editor.id ? '保存修改' : '收好这条记录'}</span></button></div></form></section>`;
+  return `<section class="page editor-view"><form id="entry-form" class="editor-form"><div class="field"><label class="field-label" for="occurred-at">事情发生在</label><input class="field-control" id="occurred-at" name="occurredAt" type="datetime-local" value="${escape(editor.timeInput)}" required step="60"><p class="field-help">现在想起以前的事，也可以改成当时的日期和时间。</p></div><div class="field"><label class="field-label sr-only" for="entry-text">日记内容</label><textarea class="field-control textarea" id="entry-text" name="text" rows="9" maxlength="50000" placeholder="刚刚发生了什么，或是突然想起了什么…">${escape(editor.draft.text)}</textarea></div><div data-editor-photos>${photoStrip(editor.draft.photos, true)}</div><div class="editor-toolbar">${button('加几张照片', 'choose-photo', { className: 'secondary', symbol: 'image' })}<span class="field-help">${editor.draft.photos.length}/12 张</span></div><input id="entry-photos" type="file" accept="image/*" multiple class="sr-only" hidden><div class="editor-footer"><p class="draft-status" data-draft-status role="status">${editor.id ? '修改后，点「保存修改」收好。' : '草稿会自动保存在本机，联网后会同步。'}</p><button type="submit" class="button primary">${icon('check')}<span>${editor.id ? '保存修改' : '收好这条记录'}</span></button></div></form></section>`;
 }
 
 function renderCountdownForm(view) {
@@ -479,6 +548,7 @@ function render() {
   else if (view?.kind === 'countdown') app.innerHTML = renderCountdownForm(view);
   else if (view?.kind === 'photo') app.innerHTML = renderPhotoViewer(view);
   else app.innerHTML = ({ today: renderToday, review: renderReview, countdowns: renderCountdowns, settings: renderSettings })[state.tab]();
+  updateSyncStatus(state.sync);
   updateBusy();
   void hydratePhotos();
 }
@@ -530,7 +600,7 @@ async function exportDiary() {
 
 async function importDiary(file) {
   if (!file) return;
-  const choice = await ask('从备份恢复？', '恢复会替换当前的日记、照片、期待日和草稿。建议先导出一份当前备份。', [
+  const choice = await ask('从备份恢复？', '这份备份会替换本机日记，联网后再与云端已有的记录合并。建议先导出当前备份，保留尚未同步的内容。', [
     { value: 'cancel', label: '先不恢复' },
     { value: 'restore', label: '恢复这份备份', className: 'primary' },
   ]);
@@ -574,7 +644,7 @@ async function removeEntry(id) {
     { value: 'delete', label: '删除记录', className: 'danger' },
   ]);
   if (choice !== 'delete') return;
-  await runBusy(async () => { await mutate(() => storage.removeEntry(id)); render(); toast('这条记录已移除。'); });
+  await runBusy(async () => { await mutate(() => storage.removeEntry(id, entry)); render(); toast('这条记录已移除。'); });
 }
 
 async function removeCountdown(id) {
@@ -582,7 +652,7 @@ async function removeCountdown(id) {
   if (!item) return;
   const choice = await ask('移除这个日子？', item.title, [{ value: 'cancel', label: '保留' }, { value: 'delete', label: '移除', className: 'danger' }]);
   if (choice !== 'delete') return;
-  await runBusy(async () => { await mutate(() => storage.removeCountdown(id)); render(); toast('这个日子已移除。'); });
+  await runBusy(async () => { await mutate(() => storage.removeCountdown(id, item)); render(); toast('这个日子已移除。'); });
 }
 
 async function handleAction(action, element) {
@@ -591,6 +661,8 @@ async function handleAction(action, element) {
     case 'back': await requestBack(); break;
     case 'back-tab': backTab(); break;
     case 'retry-load': await initialize(); break;
+    case 'show-sync': setTab('settings'); break;
+    case 'sync-now': requestSync?.(); break;
     case 'new-entry': openEditor(); break;
     case 'backfill-entry':
       if (state.data.draft && hasContent(state.data.draft)) toast('已打开上次的草稿，改一下发生日期就能补记。');
@@ -748,6 +820,7 @@ async function initialize() {
   try {
     state.data = await storage.loadDiary();
     state.loading = false;
+    requestSync ??= startSync({ onStatus: updateSyncStatus, onData: receiveSyncedDiary });
   } catch (error) {
     state.loading = false;
     state.error = `${errorMessage(error)} 原来的资料不会被重置；请重新读取。`;

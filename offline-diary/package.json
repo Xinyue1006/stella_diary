@@ -1,0 +1,8 @@
+{
+  "name": "sunflower-plush-diary",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  }
+}
