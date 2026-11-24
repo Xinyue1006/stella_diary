@@ -1,5 +1,5 @@
 /* IndexedDB remains the source for offline reads and writes. */
-import { emptyDiary, mergeDiary, preserveDraft, same } from './merge.js';
+import { emptyDiary, mergeDiary, preserveDraft, retainDailyFields, same } from './merge.js';
 export const MAX_BACKUP_BYTES = 40 * 1024 * 1024;
 export const MAX_PHOTO_BYTES = 6 * 1024 * 1024;
 export const MAX_TOTAL_PHOTO_BYTES = 24 * 1024 * 1024;
@@ -94,7 +94,8 @@ function validateDraft(value) {
   const draft = record(value, '草稿');
   const photos = list(draft.photos, MAX_ENTRY_PHOTOS, '照片').map(validatePhoto);
   if (new Set(photos.map(photo => photo.id)).size !== photos.length) throw new Error('同一条记录有重复照片');
-  return { text: text(draft.text, MAX_TEXT_LENGTH, '日记文字', true), occurredAt: timestamp(draft.occurredAt), photos };
+  if (draft.kind !== undefined && draft.kind !== 'good') throw new Error('无法识别这个记录类型');
+  return { text: text(draft.text, MAX_TEXT_LENGTH, '日记文字', true), occurredAt: timestamp(draft.occurredAt), photos, ...(draft.kind ? { kind: draft.kind } : {}) };
 }
 
 function dayKind(kind) {
@@ -115,11 +116,21 @@ function validateAnxietyLog(value) {
   const actions = validateActions(log.actions);
   const helpfulActions = validateActions(log.helpfulActions);
   if (helpfulActions.some(action => !actions.includes(action))) throw new Error('请先选中用过的应对方式');
+  if (log.comparison !== undefined && !['less', 'same', 'more', 'unsure'].includes(log.comparison)) throw new Error('回顾选项无效');
   return {
     id: identifier(log.id), occurredAt: timestamp(log.occurredAt), updatedAt: timestamp(log.updatedAt),
     intensity: log.intensity, worry: text(log.worry, MAX_TEXT_LENGTH, '担心的事', true),
-    outcome: text(log.outcome, MAX_TEXT_LENGTH, '后来发生的事', true), actions, helpfulActions
+    outcome: text(log.outcome, MAX_TEXT_LENGTH, '后来发生的事', true), actions, helpfulActions,
+    ...(log.remindOn !== undefined ? { remindOn: dateKey(log.remindOn) } : {}),
+    ...(log.comparison !== undefined ? { comparison: log.comparison } : {})
   };
+}
+
+function validateTodo(value) {
+  const todo = record(value, '待办');
+  const label = text(todo.text, 500, '待办内容').trim();
+  if (!label || typeof todo.done !== 'boolean') throw new Error('待办格式无效');
+  return { id: identifier(todo.id), text: label, done: todo.done, createdAt: timestamp(todo.createdAt), updatedAt: timestamp(todo.updatedAt) };
 }
 
 function validateDiary(value) {
@@ -139,8 +150,9 @@ function validateDiary(value) {
     return { id: identifier(countdown.id), title, date: dateKey(countdown.date), ...dayKind(countdown.kind) };
   });
   const anxietyLogs = list(diary.anxietyLogs === undefined ? [] : diary.anxietyLogs, 20000, '焦虑记录').map(validateAnxietyLog);
-  if ([entries, countdowns, anxietyLogs].some(rows => new Set(rows.map(row => row.id)).size !== rows.length)) throw new Error('资料含有重复记录编号');
-  return { schemaVersion: 1, entries, countdowns, anxietyLogs, mascot: diary.mascot, draft: diary.draft === null ? null : validateDraft(diary.draft) };
+  const todos = list(diary.todos === undefined ? [] : diary.todos, 20000, '待办').map(validateTodo);
+  if ([entries, countdowns, anxietyLogs, todos].some(rows => new Set(rows.map(row => row.id)).size !== rows.length)) throw new Error('资料含有重复记录编号');
+  return { schemaVersion: 1, entries, countdowns, anxietyLogs, todos, mascot: diary.mascot, draft: diary.draft === null ? null : validateDraft(diary.draft) };
 }
 
 function mapPhotos(diary, map) {
@@ -176,24 +188,39 @@ function onSuccess(request, action, fail) {
   request.onsuccess = () => { try { action(request.result); } catch (error) { fail(error); } };
 }
 
-function storedDiary(value, base) {
+function storedDiary(value, base, fields) {
   if (value === undefined) return emptyDiary();
   // A still-open old shell can rewrite local state without this collection.
   // Its omission carries no deletion intent, so retain known synced records.
-  if (value.anxietyLogs === undefined && base?.diary.anxietyLogs) {
-    return localDiary({ ...value, anxietyLogs: base.diary.anxietyLogs });
-  }
+  if (value.anxietyLogs === undefined && base?.diary.anxietyLogs) value = { ...value, anxietyLogs: base.diary.anxietyLogs };
+  const previous = fields ?? base?.diary;
+  if (value.todos === undefined && previous) value = retainDailyFields(value, previous);
   return localDiary(value);
 }
 
 function readStoredDiary(state, action, fail) {
   onSuccess(state.get('diary'), value => {
-    if (value && value.anxietyLogs === undefined) {
-      onSuccess(state.get(checkpointKey), base => action(storedDiary(value, base)), fail);
+    if (value && (value.anxietyLogs === undefined || value.todos === undefined)) {
+      readStateKeys(state, [checkpointKey, dailyFieldsKey], (base, fields) => action(storedDiary(value, base, fields)), fail);
     } else {
       action(storedDiary(value));
     }
   }, fail);
+}
+
+const dailyFieldsKey = 'daily-fields';
+
+function writeStoredDiary(state, diary) {
+  state.put(diary, 'diary');
+  // An already-open legacy tab can write to the old diary key, even offline.
+  // Keep the fields that shell cannot represent in the same transaction.
+  state.put({
+    todos: diary.todos,
+    entries: diary.entries.filter(entry => entry.kind || (diary.draft?.kind && entry.occurredAt === diary.draft.occurredAt))
+      .map(({ id, kind }) => ({ id, kind })),
+    draft: diary.draft?.kind ? { kind: diary.draft.kind, occurredAt: diary.draft.occurredAt } : null,
+    anxietyLogs: diary.anxietyLogs.filter(log => log.remindOn || log.comparison).map(({ id, remindOn, comparison }) => ({ id, remindOn, comparison }))
+  }, dailyFieldsKey);
 }
 
 /** Read/modify/write happens within ONE transaction, including across open tabs. */
@@ -211,7 +238,7 @@ async function mutate(transform) {
         }, fail);
       }
       state.put(current, 'previous');
-      state.put(next, 'diary');
+      writeStoredDiary(state, next);
       done(next);
     }, fail);
   }).then(committed);
@@ -226,6 +253,7 @@ export async function loadDiary() {
 
 const checkpointKey = 'cloud-checkpoint';
 const intentKey = 'cloud-upload';
+const restoreKey = 'pending-restore';
 
 function readStateKeys(state, keys, action, fail) {
   const requests = keys.map(key => state.get(key));
@@ -238,7 +266,8 @@ function newCheckpoint(owner) {
 
 // A restored backup is a new input to the first merge. Missing records in that
 // backup are not deletions from the cloud. Keep the original account binding.
-function resetSyncBase(state, fail) {
+function resetSyncBase(state, restored, fail) {
+  state.put(restored, restoreKey);
   onSuccess(state.get(checkpointKey), base => {
     if (base) state.put(newCheckpoint(base.owner), checkpointKey);
     state.delete(intentKey);
@@ -249,22 +278,24 @@ export async function readSyncState(owner) {
   const db = await openDatabase();
   return transact(db, ['state'], owner ? 'readwrite' : 'readonly', (transaction, done, fail) => {
     const state = transaction.objectStore('state');
-    readStateKeys(state, ['diary', checkpointKey, intentKey], (value, base, intent) => {
-      const local = storedDiary(value, base);
+    readStateKeys(state, ['diary', checkpointKey, intentKey, dailyFieldsKey, restoreKey], (value, base, intent, fields, restored) => {
+      const local = storedDiary(value, base, fields);
+      const legacyLocal = value && value.todos === undefined && !fields && base?.diary.todos === undefined;
       if (owner && base && owner !== base.owner) throw new Error('请登录之前同步这本日记的 ChatGPT 账号。本机资料已保留。');
       if (owner && !base) {
         base = newCheckpoint(owner);
         state.put(base, checkpointKey);
       }
-      // Older clients may know the current ETag while omitting logs stored at
-      // that very version. Fetch its full body once before trusting a 304.
-      if (base && base.diary.anxietyLogs === undefined) {
+      // A legacy checkpoint can have the current ETag but lack newer fields.
+      // Fetch its full body once before trusting a 304.
+      if (base && (base.diary.anxietyLogs === undefined || base.diary.todos === undefined)) {
         base = { ...base, diary: localDiary(base.diary), needsFullSnapshot: true };
       }
-      if (intent && intent.target.anxietyLogs === undefined) {
-        intent = { before: storedDiary(intent.before, base), target: localDiary(intent.target), predatesAnxietyLogs: true };
+      if (intent && (intent.target.anxietyLogs === undefined || intent.target.todos === undefined)) {
+        intent = { before: storedDiary(intent.before, base, fields), target: localDiary(intent.target),
+          predatesAnxietyLogs: intent.target.anxietyLogs === undefined, predatesDailyFields: intent.target.todos === undefined };
       }
-      done({ local, base, intent });
+      done({ local, base, intent, legacyLocal, restored });
     }, fail);
   });
 }
@@ -287,16 +318,17 @@ export async function applySyncedDiary(snapshot, target, version) {
   const db = await openDatabase();
   return transact(db, ['state'], 'readwrite', (transaction, done, fail) => {
     const state = transaction.objectStore('state');
-    readStateKeys(state, ['diary', checkpointKey], (value, base) => {
+    readStateKeys(state, ['diary', checkpointKey, dailyFieldsKey], (value, base, fields) => {
       if (base?.stamp !== snapshot.base.stamp) { done(null); return; }
-      const current = storedDiary(value, base);
+      const current = storedDiary(value, base, fields);
       const next = same(current, snapshot.local) ? target : localDiary(mergeDiary(snapshot.local, current, target));
-      if (!same(current, next) || (value && value.anxietyLogs === undefined)) {
+      if (!same(current, next) || (value && (value.anxietyLogs === undefined || value.todos === undefined))) {
         state.put(current, 'previous');
-        state.put(next, 'diary');
+        writeStoredDiary(state, next);
       }
       state.put({ owner: base.owner, version, diary: target, stamp: makeId('checkpoint') }, checkpointKey);
       state.delete(intentKey);
+      state.delete(restoreKey);
       done({ diary: next, pending: !same(next, target) });
     }, fail);
   });
@@ -386,10 +418,13 @@ export async function saveAnxietyLog(input, id, expectedLog) {
     if (id !== undefined && !current && !expectedLog) throw new Error('这条焦虑记录已不存在');
     const replace = current && (!expectedLog || same(current, expectedLog));
     const now = new Date().toISOString();
-    const log = validateAnxietyLog({
+    const fields = {
       occurredAt: now, worry: '', outcome: '', actions: [], helpfulActions: [],
       ...(expectedLog ?? current), ...input, id: replace ? id : makeId('anxiety'), updatedAt: now
-    });
+    };
+    if (fields.comparison === null) delete fields.comparison;
+    if (fields.remindOn === null) delete fields.remindOn;
+    const log = validateAnxietyLog(fields);
     const anxietyLogs = replace ? diary.anxietyLogs.map(item => item.id === id ? log : item) : [...diary.anxietyLogs, log];
     return { ...diary, anxietyLogs };
   });
@@ -406,6 +441,29 @@ export async function removeAnxietyLog(id, expectedLog) {
 export async function selectMascot(id) {
   if (!MASCOTS.includes(id)) throw new Error('没有找到这只小猪');
   return mutate(diary => ({ ...diary, mascot: id }));
+}
+
+export async function saveTodo(input, id, expectedTodo) {
+  record(input, '待办');
+  if (id !== undefined) identifier(id);
+  return mutate(diary => {
+    const current = id === undefined ? undefined : diary.todos.find(todo => todo.id === id);
+    if (id !== undefined && !current && !expectedTodo) throw new Error('这条待办已不存在');
+    const replace = current && (!expectedTodo || same(current, expectedTodo));
+    const original = expectedTodo ?? current;
+    const now = new Date().toISOString();
+    const todo = validateTodo({ done: false, ...original, ...input, id: replace ? id : makeId('todo'), createdAt: original?.createdAt ?? now, updatedAt: now });
+    const todos = replace ? diary.todos.map(item => item.id === id ? todo : item) : [...diary.todos, todo];
+    return { ...diary, todos };
+  });
+}
+
+export async function removeTodo(id, expectedTodo) {
+  identifier(id);
+  return mutate(diary => {
+    if (expectedTodo && !same(diary.todos.find(item => item.id === id), expectedTodo)) throw new Error('这条待办有新的改动，请重新查看后再移除。');
+    return { ...diary, todos: diary.todos.filter(todo => todo.id !== id) };
+  });
 }
 
 function imageMime(bytes, fallback = '') {
@@ -510,8 +568,8 @@ export async function importBackup(file) {
       if (current !== undefined) state.put(current, 'previous');
       const photos = transaction.objectStore('photos');
       for (const photo of blobs) photos.add(photo);
-      state.put(restored, 'diary');
-      resetSyncBase(state, fail);
+      writeStoredDiary(state, restored);
+      resetSyncBase(state, restored, fail);
       done(restored);
     }, fail);
   }).then(committed);
@@ -559,8 +617,8 @@ export async function restorePrevious() {
       }
       onSuccess(state.get('diary'), current => {
         if (current !== undefined) state.put(current, 'unreadable');
-        state.put(restored, 'diary');
-        resetSyncBase(state, fail);
+        writeStoredDiary(state, restored);
+        resetSyncBase(state, restored, fail);
         done(restored);
       }, fail);
     }, fail);

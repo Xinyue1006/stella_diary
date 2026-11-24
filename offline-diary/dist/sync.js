@@ -1,4 +1,4 @@
-import { emptyDiary, mergeDiary, same } from './merge.js';
+import { editsSinceRestore, emptyDiary, mergeDiary, retainDailyFields, same } from './merge.js';
 import {
   allPhotos, applySyncedDiary, loadDiary, localDiary, readPhotoBlob,
   readSyncState, rememberUpload, storeDownloadedPhoto
@@ -110,24 +110,31 @@ async function syncOnce(onWork) {
 
   // A response can be lost after a successful upload. Finish its local commit
   // using the saved pre-upload state, including edits made since that upload.
-  const intended = intent?.predatesAnxietyLogs ? { ...intent.target, anxietyLogs: remote.anxietyLogs } : intent?.target;
+  let intended = intent?.predatesAnxietyLogs ? { ...intent.target, anxietyLogs: remote.anxietyLogs } : intent?.target;
+  if (intent?.predatesDailyFields) intended = retainDailyFields(intended, remote);
   if (intent && cloud.diary && same(intended, remote)) {
     onWork();
     return applySyncedDiary({ ...snapshot, local: intent.before }, remote, cloud.version);
   }
-  if (!intent && !base.needsFullSnapshot && cloud.version === base.version && same(local, base.diary)) {
+  if (!intent && !snapshot.restored && !base.needsFullSnapshot && cloud.version === base.version && same(local, base.diary)) {
     return { diary: local, pending: false, unchanged: true };
   }
   onWork();
-  const input = !base.version && cloud.diary ? await reconcileRestoredPhotos(local, remote, cloud.owner) : local;
-  const merged = cloud.diary ? localDiary(mergeDiary(base.diary, input, remote)) : local;
+  const upgradedLocal = snapshot.legacyLocal ? retainDailyFields(local, remote) : local;
+  let upgradedBase = snapshot.legacyLocal && base.needsFullSnapshot ? retainDailyFields(base.diary, remote) : base.diary;
+  if (snapshot.restored && cloud.diary) {
+    const changes = editsSinceRestore(snapshot.restored, upgradedLocal);
+    upgradedBase = await reconcileRestoredPhotos(changes, remote, cloud.owner);
+  }
+  const input = !base.version && cloud.diary ? await reconcileRestoredPhotos(upgradedLocal, remote, cloud.owner) : upgradedLocal;
+  const merged = cloud.diary ? localDiary(mergeDiary(upgradedBase, input, remote)) : local;
   await transferPhotos(merged, remote, snapshot, cloud.owner);
   let version = cloud.version;
   if (!same(merged, remote)) {
     if (!await rememberUpload(snapshot, merged)) throw new RetrySync();
     const result = await api('/api/sync', {
       method: 'PUT', headers: {
-        'Content-Type': 'application/json', 'X-Diary-Owner': cloud.owner, 'X-Diary-Day-Kinds': '1', 'X-Diary-Anxiety-Logs': '1'
+        'Content-Type': 'application/json', 'X-Diary-Owner': cloud.owner, 'X-Diary-Day-Kinds': '1', 'X-Diary-Anxiety-Logs': '1', 'X-Diary-Daily-Features': '1'
       },
       body: JSON.stringify({ version, diary: merged })
     });

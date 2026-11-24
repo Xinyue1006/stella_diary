@@ -20,12 +20,19 @@ function blankDraft(date?: string): EntryDraft {
   return { text: '', occurredAt: now.toISOString(), photos: [] };
 }
 
-export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; date?: string; onClose: () => void; onSaved: (occurredAt: string) => void }) {
+export function EntryEditor({ entry, date, kind, onClose, onSaved }: { entry?: Entry; date?: string; kind?: 'good'; onClose: () => void; onSaved: (occurredAt: string) => void }) {
   const { data, saveDraft, saveEntry } = useDiaryContext();
-  const [draft, setDraft] = useState<EntryDraft>(() => entry ? { text: entry.text, occurredAt: entry.occurredAt, photos: entry.photos } : data.draft && (data.draft.text.trim() || data.draft.photos.length) ? data.draft : blankDraft(date));
+  const good = (entry?.kind ?? kind) === 'good';
+  const [hasOtherDraft] = useState(() => Boolean(data.draft && (data.draft.text.trim() || data.draft.photos.length) && data.draft.kind !== kind));
+  const autosave = !entry && !hasOtherDraft;
+  const [draft, setDraft] = useState<EntryDraft>(() => {
+    if (entry) return { kind: entry.kind, text: entry.text, occurredAt: entry.occurredAt, photos: entry.photos };
+    if (!hasOtherDraft && data.draft && (data.draft.text.trim() || data.draft.photos.length)) return data.draft;
+    return { ...blankDraft(date), kind };
+  });
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
-  const [status, setStatus] = useState(entry ? '修改后点「保存」' : '草稿会自动保存在手机');
+  const [status, setStatus] = useState(autosave ? '草稿会自动保存在手机' : hasOtherDraft && !entry ? '另一份草稿已保留。写完后点下方保存。' : '修改后点「保存」');
   const [androidPicker, setAndroidPicker] = useState<'date' | 'time' | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -66,7 +73,7 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
   }
 
   useEffect(() => {
-    if (entry || stopped.current) return;
+    if (!autosave || stopped.current) return;
     setStatus('正在保存草稿…');
     const snapshot = draft;
     timer.current = setTimeout(() => {
@@ -77,10 +84,10 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
       });
     }, 600);
     return cancelTimer;
-  }, [draft, entry, saveDraft]);
+  }, [draft, autosave, saveDraft]);
 
   useEffect(() => {
-    if (entry) return;
+    if (!autosave) return;
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active' && !stopped.current) {
         cancelTimer();
@@ -88,7 +95,7 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
       }
     });
     return () => subscription.remove();
-  }, [entry, saveDraft]);
+  }, [autosave, saveDraft]);
 
   function update(partial: Partial<EntryDraft>) {
     if (action.current === 'saving' || action.current === 'closing' || confirmingExit.current) return;
@@ -101,10 +108,10 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
     if (action.current !== 'idle' || confirmingExit.current) return;
     Keyboard.dismiss();
     setAndroidPicker(null);
-    if (entry) {
+    if (!autosave) {
       if (changedFromOriginal()) {
         confirmingExit.current = true;
-        Alert.alert('修改还没保存', '可以保存这次修改后返回，或保留原来的记录。', [
+        Alert.alert('这条记录还没保存', '要把刚才写的内容收好吗？', [
           { text: '继续写', style: 'cancel', onPress: () => { confirmingExit.current = false; } },
           { text: '放弃修改并返回', style: 'destructive', onPress: () => { confirmingExit.current = false; stopped.current = true; action.current = 'closing'; onClose(); } },
           { text: '保存并返回', onPress: () => { confirmingExit.current = false; void save(); } },
@@ -183,18 +190,18 @@ export function EntryEditor({ entry, date, onClose, onSaved }: { entry?: Entry; 
   const occurredAt = new Date(draft.occurredAt);
 
   return <Modal visible animationType="slide" presentationStyle="fullScreen" allowSwipeDismissal={false} onRequestClose={systemBack}>
-      <BackPage title={entry ? '修改记录' : '写下一点'} onBack={() => { void close(); }} disabled={busy || picking}
+      <BackPage title={good ? '今天有一点好' : entry ? '修改记录' : '写下一点'} onBack={() => { void close(); }} disabled={busy || picking}
         action={<ActionButton title={entry ? '保存修改' : '收好这条记录'} icon="checkmark" busy={busy} disabled={picking || (!draft.text.trim() && !draft.photos.length)} onPress={() => { void save(); }} />}>
         <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={styles.content}>
           <Text style={styles.label}>事情发生在</Text>
           {Platform.OS === 'ios' ? <View style={styles.pickerRow}><DateTimePicker accessibilityLabel="事情发生的日期" mode="date" display="compact" themeVariant="light" locale="zh-CN" value={occurredAt} disabled={busy || picking} onChange={(_, next) => { if (next) update({ occurredAt: next.toISOString() }); }} /><DateTimePicker accessibilityLabel="事情发生的时间" mode="time" display="compact" themeVariant="light" locale="zh-CN" value={occurredAt} disabled={busy || picking} onChange={(_, next) => { if (next) update({ occurredAt: next.toISOString() }); }} /></View> : <View style={styles.pickerRow}><ActionButton secondary disabled={busy || picking} title={dayKey(occurredAt)} onPress={() => setAndroidPicker('date')} /><ActionButton secondary disabled={busy || picking} title={occurredAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })} onPress={() => setAndroidPicker('time')} /></View>}
           {androidPicker ? <DateTimePicker mode={androidPicker} value={occurredAt} onChange={(_, next) => { setAndroidPicker(null); if (next) update({ occurredAt: next.toISOString() }); }} /> : null}
           <Text style={styles.hint}>现在想起以前的事，也可以改成当时的时间。</Text>
-          <TextInput accessibilityLabel="日记内容" placeholder="刚刚发生了什么，或是突然想起了什么…" placeholderTextColor="#989B91" value={draft.text} onChangeText={(text) => update({ text })} multiline textAlignVertical="top" style={styles.editor} editable={!busy && !picking} maxLength={50000} />
+          <TextInput accessibilityLabel={good ? '想分享的小事' : '日记内容'} placeholder={good ? '今天有什么想分享给小猪？' : '刚刚发生了什么，或是突然想起了什么…'} placeholderTextColor="#989B91" value={draft.text} onChangeText={(text) => update({ text })} multiline textAlignVertical="top" style={styles.editor} editable={!busy && !picking} maxLength={50000} />
           {draft.photos.length ? <View style={styles.photoGrid}>{draft.photos.map((photo, index) => <View key={photo.id} style={styles.photoWrap}><Pressable accessibilityRole="button" accessibilityLabel={`查看第 ${index + 1} 张照片`} disabled={busy || picking} onPress={() => { Keyboard.dismiss(); setPreview(photo.uri); }}><Image source={{ uri: photo.uri }} style={styles.photo} /></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`移除第 ${index + 1} 张照片`} disabled={busy || picking} style={styles.removePhoto} onPress={() => update({ photos: latest.current.photos.filter((item) => item.id !== photo.id) })}><Icon name="close" size={18} color={colors.ink} /></Pressable></View>)}</View> : null}
           <ActionButton secondary title={picking ? '正在加入照片…' : '加几张照片'} busy={picking} disabled={busy} onPress={() => { void addPhotos(); }} icon="image-outline" />
           <Text style={styles.status} accessibilityLiveRegion="polite">{status}</Text>
-          {!entry ? <Text style={styles.hint}>返回时会先保存草稿。</Text> : null}
+          {autosave ? <Text style={styles.hint}>返回时会先保存草稿。</Text> : null}
         </ScrollView>
       </BackPage>
       <Modal visible={Boolean(preview)} transparent animationType="fade" presentationStyle="overFullScreen" allowSwipeDismissal={false} onRequestClose={() => setPreview(null)}><BackPage title="照片" backLabel="返回日记" dark onBack={() => setPreview(null)}>{preview ? <Image source={{ uri: preview }} style={styles.previewImage} resizeMode="contain" /> : null}</BackPage></Modal>

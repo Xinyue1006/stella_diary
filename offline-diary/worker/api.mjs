@@ -1,3 +1,5 @@
+import { retainDailyFields } from '../dist/merge.js';
+
 // Sites dispatch supplies the authenticated visitor header. User records and
 // immutable photo objects live in a private R2 namespace for that visitor.
 const privateHeaders = {
@@ -71,6 +73,10 @@ function validId(value) {
   return typeof value === 'string' && identifier.test(value);
 }
 
+function validDay(value) {
+  return typeof value === 'string' && value >= '1900-01-01' && value <= '2200-12-31' && validTimestamp(value + 'T00:00:00.000Z');
+}
+
 function validActions(actions) {
   return Array.isArray(actions) && actions.length <= 32 &&
     actions.every(action => typeof action === 'string' && action.length > 0 && action.length <= 120 && action.trim() === action) &&
@@ -84,6 +90,7 @@ function validateSnapshot(diary) {
   const photoIds = new Set();
   function validateContent(value) {
     valid(typeof value?.text === 'string' && value.text.length <= 50000 && validTimestamp(value.occurredAt));
+    valid(value.kind === undefined || value.kind === 'good');
     valid(Array.isArray(value.photos) && value.photos.length <= 12);
     const entryPhotos = new Set();
     for (const photo of value.photos) {
@@ -104,8 +111,7 @@ function validateSnapshot(diary) {
   for (const item of diary.countdowns) {
     valid(validId(item?.id) && !countdowns.has(item.id) && typeof item.title === 'string' && item.title.trim() && item.title.length <= 80);
     valid(item.kind === undefined || item.kind === 'anniversary' || item.kind === 'countdown');
-    valid(typeof item.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.date));
-    valid(item.date >= '1900-01-01' && item.date <= '2200-12-31' && validTimestamp(item.date + 'T00:00:00.000Z'));
+    valid(validDay(item.date));
     countdowns.add(item.id);
   }
   if (diary.anxietyLogs !== undefined) {
@@ -116,7 +122,18 @@ function validateSnapshot(diary) {
       valid([1, 2, 3].includes(log.intensity) && typeof log.worry === 'string' && log.worry.length <= 50000 &&
         typeof log.outcome === 'string' && log.outcome.length <= 50000);
       valid(validActions(log.actions) && validActions(log.helpfulActions) && log.helpfulActions.every(action => log.actions.includes(action)));
+      valid(log.remindOn === undefined || validDay(log.remindOn));
+      valid(log.comparison === undefined || ['less', 'same', 'more', 'unsure'].includes(log.comparison));
       ids.add(log.id);
+    }
+  }
+  if (diary.todos !== undefined) {
+    valid(Array.isArray(diary.todos) && diary.todos.length <= 20000);
+    const ids = new Set();
+    for (const todo of diary.todos) {
+      valid(validId(todo?.id) && !ids.has(todo.id) && validTimestamp(todo.createdAt) && validTimestamp(todo.updatedAt));
+      valid(typeof todo.done === 'boolean' && typeof todo.text === 'string' && todo.text.trim() && todo.text.length <= 500);
+      ids.add(todo.id);
     }
   }
   return photoIds;
@@ -189,11 +206,13 @@ async function snapshot(request, bucket, prefix, owner) {
   // against its exact version so concurrent edits can still trigger a retry.
   const preserveDayKinds = request.headers.get('X-Diary-Day-Kinds') !== '1' && payload.diary.countdowns.length > 0;
   const preserveAnxiety = request.headers.get('X-Diary-Anxiety-Logs') !== '1' || payload.diary.anxietyLogs === undefined;
-  if (payload.version && (preserveDayKinds || preserveAnxiety)) {
+  const preserveDaily = request.headers.get('X-Diary-Daily-Features') !== '1' || payload.diary.todos === undefined;
+  if (payload.version && (preserveDayKinds || preserveAnxiety || preserveDaily)) {
     const previous = await bucket.get(key, { onlyIf: { etagMatches: payload.version } });
     if (!previous?.body) throw new DiaryRequestError(409, '请重新同步最新的日记');
     const prior = await previous.json();
     if (preserveAnxiety) payload.diary.anxietyLogs = prior.anxietyLogs ?? [];
+    if (preserveDaily) payload.diary = retainDailyFields(payload.diary, prior);
     if (preserveDayKinds) {
       const anniversaries = new Set(prior.countdowns.filter(day => day.kind === 'anniversary').map(day => day.id));
       for (const day of payload.diary.countdowns) {

@@ -4,7 +4,8 @@ import { useMemo, useRef, useState } from 'react';
 import { Alert, Image, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { anxietyLogsForReview } from '../domain';
 import type { AnxietyLog, Countdown, Entry } from '../types';
-import { AnxietyCard } from './AnxietyJournal';
+import { AnxietyCard, FollowUpCard } from './AnxietyJournal';
+import { TodoList } from './TodoList';
 import { ActionButton, EmptyState, Icon, IconButton, PageHeading, Screen, SectionHeading } from './components';
 import { dayKey, daysFromToday, displayDate, displayTime, parseDay } from './dates';
 import { useDiaryContext } from './diaryContext';
@@ -47,6 +48,7 @@ function EntryCard({ entry, showDate = false }: { entry: Entry; showDate?: boole
     ]);
   }
   return <View style={styles.entryCard}>
+    {entry.kind === 'good' && <Text style={styles.eyebrow}>今天有一点好</Text>}
     <View style={styles.entryHeader}><View style={styles.entryTimeGroup}><View style={styles.timeMark} /><Text style={styles.entryTime}>{showDate ? `${new Date(entry.occurredAt).toLocaleDateString('zh-CN')} · ` : ''}{displayTime(entry.occurredAt)}</Text></View><IconButton name="ellipsis-horizontal" label={`管理${displayTime(entry.occurredAt)}的记录`} onPress={actions} /></View>
     {entry.text ? <Text style={styles.entryText} numberOfLines={expanded ? undefined : 7} onTextLayout={(event) => { if (event.nativeEvent.lines.length >= 7) setCanExpand(true); }}>{entry.text}</Text> : null}
     {canExpand ? <Pressable accessibilityRole="button" onPress={() => setExpanded(!expanded)} style={styles.expandButton}><Text style={styles.link}>{expanded ? '收起文字' : '展开全文'}</Text></Pressable> : null}
@@ -61,6 +63,7 @@ function EntryCard({ entry, showDate = false }: { entry: Entry; showDate?: boole
 
 export function TodayScreen() {
   const { data, openWriter, openAnxiety } = useDiaryContext();
+  const [showTodos, setShowTodos] = useState(false);
   const router = useRouter();
   const today = dayKey();
   const entries = data.entries.filter(entry => dayKey(entry.occurredAt) === today);
@@ -71,8 +74,14 @@ export function TodayScreen() {
   return <Screen>
     <PageHeading title="今天" subtitle={displayDate(new Date())} accessory={<View style={styles.flowerBadge}><Icon name="flower" size={25} color="#927116" /></View>} />
     <View style={[styles.hero, { backgroundColor: mascot.color }]}><View style={styles.heroCopy}><Text style={styles.eyebrow}>今天的小伙伴</Text><Text style={styles.heroTitle}>{mascot.name}</Text><Text style={styles.heroDetail}>陪你记下今天的小事。</Text></View><Image source={mascot.image} style={styles.heroPig} resizeMode="contain" accessibilityLabel={`陪伴你的${mascot.name}`} /></View>
-    <ActionButton title={data.draft && (data.draft.text.trim() || data.draft.photos.length) ? '继续上次的草稿' : '写一条记录'} icon="pencil-outline" onPress={() => openWriter()} />
+    <FollowUpCard today={today} />
+    <ActionButton title={data.draft && !data.draft.kind && (data.draft.text.trim() || data.draft.photos.length) ? '继续上次的草稿' : '写一条记录'} icon="pencil-outline" onPress={() => openWriter()} />
     <ActionButton secondary title="我现在有点焦虑" icon="heart-outline" onPress={() => openAnxiety()} />
+    <View style={styles.shortcuts}>
+      <View style={styles.flex}><ActionButton secondary title={data.draft?.kind === 'good' ? '继续写这件好事' : '今天有一点好'} icon="sunny-outline" onPress={() => openWriter(undefined, undefined, 'good')} /></View>
+      <View style={styles.flex}><ActionButton secondary title="随手清单" icon="list-outline" onPress={() => setShowTodos(true)} /></View>
+    </View>
+    {showTodos && <TodoList onClose={() => setShowTodos(false)} />}
     {nextDay ? <Pressable accessibilityRole="button" accessibilityLabel={`查看期待日：${nextDay.title}`} onPress={() => router.navigate('/countdowns')}><CountdownCard item={nextDay} compact /></Pressable> : null}
     <SectionHeading title="今天的小片段" detail={total ? `${total} 条 · 按发生时间` : undefined} />
     {total ? <Timeline entries={entries} logs={logs} /> : <EmptyState title="今天还留着空白" detail="有想记下来的事，再来写就好。\n以前的事也可以随时补记。" />}
@@ -106,12 +115,21 @@ function Calendar({ selected, onSelect, entries }: { selected: string; onSelect:
 export function ReviewScreen() {
   const { data, reviewDate, setReviewDate, reviewQuery: query, setReviewQuery: setQuery, openWriter } = useDiaryContext();
   const [searchFocused, setSearchFocused] = useState(false);
+  const [recalledId, setRecalledId] = useState<string>();
   const searching = Boolean(query.trim());
-  const entries = data.entries.filter(entry => searching ? entry.text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) : dayKey(entry.occurredAt) === reviewDate);
+  const entries = data.entries.filter(entry => searching ? [entry.text, entry.kind === 'good' ? '今天有一点好 好事' : ''].some(value => value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) : dayKey(entry.occurredAt) === reviewDate);
+  const good = data.entries.filter(entry => entry.kind === 'good');
+  const recalled = good.find(entry => entry.id === recalledId);
+  function recallGood() {
+    const pool = good.length > 1 ? good.filter(entry => entry.id !== recalledId) : good;
+    setRecalledId(pool[Math.floor(Math.random() * pool.length)]?.id);
+  }
   const logs = anxietyLogsForReview(data.anxietyLogs, reviewDate, query);
   const total = entries.length + logs.length;
   const calendarEntries = useMemo(() => [...data.entries, ...data.anxietyLogs], [data.entries, data.anxietyLogs]);
   return <Screen title="回看">
+    {!searching && good.length > 0 && <><ActionButton secondary title={recalled ? '再翻一件好事' : '翻一件好事'} icon="sunny-outline" onPress={recallGood} />
+      {recalled && <EntryCard key={'recalled-' + recalled.id} entry={recalled} showDate />}</>}
     <View style={styles.searchBox}>
       <Icon name="search-outline" size={21} />
       <TextInput accessibilityLabel="搜索日记关键词" placeholder="找一段话，或一件小事" placeholderTextColor="#92978A" value={query} onChangeText={setQuery} onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)} style={styles.searchInput} returnKeyType="search" />
@@ -121,7 +139,7 @@ export function ReviewScreen() {
     <SectionHeading title={searching ? '找到的小片段' : displayDate(parseDay(reviewDate))} detail={`${total} 条`} />
     {total ? <Timeline entries={entries} logs={logs} searching={searching} /> : <EmptyState title={searching ? '暂时没有找到' : '这一天还没有记录'} detail={searching ? '换一个关键词试试。' : '后来想起来，也可以把它补在这一天。'} icon={searching ? 'search-outline' : 'calendar-outline'} />}
     {!searching ? <ActionButton secondary title="补写这一天" icon="pencil-outline" onPress={() => {
-      if (data.draft && (data.draft.text.trim() || data.draft.photos.length)) Alert.alert('有一份还没写完的草稿', '先打开草稿，改一下发生日期就可以补写这一天。', [{ text: '稍后', style: 'cancel' }, { text: '打开草稿', onPress: () => openWriter(undefined, reviewDate) }]);
+      if (data.draft && !data.draft.kind && (data.draft.text.trim() || data.draft.photos.length)) Alert.alert('有一份还没写完的草稿', '先打开草稿，改一下发生日期就可以补写这一天。', [{ text: '稍后', style: 'cancel' }, { text: '打开草稿', onPress: () => openWriter(undefined, reviewDate) }]);
       else openWriter(undefined, reviewDate);
     }} /> : null}
   </Screen>;
@@ -248,6 +266,7 @@ export function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  shortcuts: { flexDirection: 'row', gap: 8 },
   flex: { flex: 1 },
   flowerBadge: { width: 48, height: 48, borderRadius: 24, backgroundColor: colors.yellowLight, alignItems: 'center', justifyContent: 'center' },
   hero: { borderRadius: 28, flexDirection: 'row', minHeight: 214, overflow: 'hidden', paddingLeft: 22, paddingTop: 24, paddingBottom: 25 },

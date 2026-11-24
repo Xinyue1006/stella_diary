@@ -4,7 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { allPhotos, emptyDiary, isDateKey, makeId, mapDiaryPhotos, MAX_BACKUP_BYTES, MAX_PHOTO_BYTES, MAX_TOTAL_PHOTO_BYTES, parseBackup, utf8ByteLength, validateDiaryData, validateDraft } from './domain';
-import type { AnxietyLog, Countdown, DiaryBackup, DiaryData, EntryDraft, MascotId, Photo } from './types';
+import type { AnxietyLog, Countdown, DiaryBackup, DiaryData, EntryDraft, MascotId, Photo, Todo } from './types';
 
 const STORAGE_KEY = 'sunflower-diary.v1';
 const PREVIOUS_KEY = 'sunflower-diary.previous.v1';
@@ -128,7 +128,8 @@ export function useDiary() {
     if (id && !existing) throw new Error('这条记录已不存在，请重新打开');
     const entry = { ...content, id: existing?.id ?? makeId('entry'), createdAt: existing?.createdAt ?? now, updatedAt: now };
     const entries = existing ? dataRef.current.entries.map(item => item.id === id ? entry : item) : [...dataRef.current.entries, entry];
-    await commit({ ...dataRef.current, entries, draft: id ? dataRef.current.draft : null });
+    const currentDraft = dataRef.current.draft;
+    await commit({ ...dataRef.current, entries, draft: id || content.kind !== currentDraft?.kind ? currentDraft : null });
   }), [assertLoaded, commit]);
 
   const deleteEntry = useCallback((id: string) => serial(async () => {
@@ -146,6 +147,27 @@ export function useDiary() {
 
   const deleteAnxiety = useCallback((id: string) => serial(async () => {
     await commit({ ...dataRef.current, anxietyLogs: dataRef.current.anxietyLogs.filter(log => log.id !== id) });
+  }), [commit]);
+
+  const rescheduleAnxiety = useCallback((id: string, remindOn?: string) => serial(async () => {
+    const current = dataRef.current;
+    if (!current.anxietyLogs.some(log => log.id === id)) throw new Error('这条记录已不存在');
+    const anxietyLogs = current.anxietyLogs.map(log => log.id === id ? { ...log, remindOn, updatedAt: new Date().toISOString() } : log);
+    await commit({ ...current, anxietyLogs });
+  }), [commit]);
+
+  const saveTodo = useCallback((changes: Partial<Pick<Todo, 'text' | 'done'>>, id?: string) => serial(async () => {
+    const { todos } = dataRef.current;
+    const current = id ? todos.find(item => item.id === id) : undefined;
+    if (id && !current) throw new Error('这件事已从清单移除');
+    const now = new Date().toISOString();
+    const row = { id: current?.id ?? makeId('todo'), createdAt: current?.createdAt ?? now, updatedAt: now,
+      text: changes.text?.trim() ?? current?.text ?? '', done: changes.done ?? current?.done ?? false };
+    await commit({ ...dataRef.current, todos: current ? todos.map(item => item.id === id ? row : item) : [...todos, row] });
+  }), [commit]);
+
+  const deleteTodo = useCallback((id: string) => serial(async () => {
+    await commit({ ...dataRef.current, todos: dataRef.current.todos.filter(item => item.id !== id) });
   }), [commit]);
 
   const saveCountdown = useCallback((input: Omit<Countdown, 'id'>, id?: string) => serial(async () => {
@@ -229,5 +251,5 @@ export function useDiary() {
     });
   }, [assertLoaded, commit]);
 
-  return { data, ready, error, recoveryAvailable, restorePrevious, saveEntry, deleteEntry, saveAnxiety, deleteAnxiety, saveCountdown, deleteCountdown, selectMascot, saveDraft, exportBackup, importBackup, retryLoad };
+  return { data, ready, error, recoveryAvailable, restorePrevious, saveEntry, deleteEntry, saveAnxiety, deleteAnxiety, rescheduleAnxiety, saveTodo, deleteTodo, saveCountdown, deleteCountdown, selectMascot, saveDraft, exportBackup, importBackup, retryLoad };
 }

@@ -296,6 +296,39 @@ button, p, label, small { overflow-wrap: anywhere; }
 .anxiety-methods { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 13px 0; }
 .anxiety-methods li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--line); border-radius: 10px; font-size: .875rem; overflow-wrap: anywhere; }
 .anxiety-followup { margin-top: 12px; }
+.journal-shortcuts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.journal-shortcuts .button { flex: 1 1 115px; min-height: 46px; }
+.button.good-shortcut { background: #fff6d9; color: #655023; border: 1px solid #e9d9ac; }
+.good-card { border-inline-start: 3px solid #dfbd65; }
+.good-label { color: #765a20; font-size: .82rem; font-weight: 650; margin-bottom: 5px; }
+.recall-good { align-self: flex-start; }
+.followup-card { padding: clamp(16px, 3vw, 27px); border-radius: 20px; background: var(--green-light); border: 1px solid #dce5d0; }
+.followup-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.followup-heading img { width: 48px; height: 52px; object-fit: contain; }
+.followup-heading h2 { font-size: 1.08rem; }
+.followup-worry { margin: 4px 0 12px; line-height: 1.8; white-space: pre-line; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.followup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.button.text-action { min-height: 44px; color: var(--green); border-color: transparent; background: none; padding-inline: 8px; font-weight: 500; }
+.reminder-field { border-top: 1px solid var(--line); padding-top: 10px; }
+.reminder-field label { display: flex; align-items: center; gap: 9px; min-height: 44px; width: fit-content; cursor: pointer; }
+.reminder-field input { -webkit-appearance: auto; appearance: auto; accent-color: var(--green); width: 20px; height: 20px; margin: 0; }
+.reminder-field label:has(input:checked) { color: var(--green-deep); font-weight: 600; }
+.comparison-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); }
+.comparison-note { margin-top: 8px; font-size: .9rem; color: var(--green-deep); }
+.todo-page { max-width: 760px; }
+.todo-page .section-heading { flex-wrap: wrap; gap: 10px; }
+.todo-list { list-style: none; margin: 0; padding: 0; border-block: 1px solid var(--line); }
+.todo-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; }
+.todo-row + .todo-row { border-top: 1px solid var(--line); }
+.todo-row .entry-tools { flex: none; }
+.todo-toggle { flex: 1; min-width: 0; min-height: 46px; padding: 8px 0; display: flex; align-items: center; gap: 12px; text-align: start; }
+.todo-toggle > span:last-child { white-space: pre-line; overflow-wrap: anywhere; }
+.todo-check { display: grid; place-items: center; flex: none; width: 23px; height: 23px; border: 1.5px solid #879c7d; border-radius: 7px; }
+.todo-row.is-done .todo-check { color: white; background: var(--green); border-color: var(--green); }
+.todo-check svg { width: 17px; height: 17px; }
+.todo-row.is-done .todo-toggle > span:last-child { text-decoration: line-through; color: var(--muted); }
+.todo-done summary { cursor: pointer; padding: 12px 0; color: var(--green); }
+#todo-text { min-height: 120px; }
 .field { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .field-label, .field > label { color: #52674e; font-size: .9375rem; font-weight: 600; }
 .field-control, .field input:not([type="file"]), .field textarea, .field select { width: 100%; padding: 13px 15px; border: 1px solid #dfe5d5; border-radius: 14px; background: var(--surface); font-size: 1rem; line-height: 1.6; }
@@ -456,11 +489,16 @@ html.is-busy { cursor: progress; }
 
 @media (max-width: 350px) {
   #app { padding-inline: 15px; }
+  .masthead { gap: 8px; }
+  .masthead h1 { font-size: 1.375rem; }
+  .masthead .eyebrow { font-size: .75rem; }
   .page { gap: 20px; }
-  .hero { min-height: 225px; padding: 21px 12px 21px 19px; grid-template-columns: 1.1fr 1fr; }
+  .hero { min-height: 225px; padding: 21px 12px 21px 16px; grid-template-columns: 1.25fr .9fr; }
   .hero-copy { gap: 13px; }
   .hero-copy h1, .hero-copy h2 { font-size: 1.375rem; }
-  .hero-copy .button { padding-inline: 10px; font-size: .875rem; }
+  .hero-copy .button { padding-inline: 8px; font-size: .875rem; gap: 5px; }
+  .journal-shortcuts .button { padding: 10px 8px; font-size: .875rem; gap: 6px; }
+  .journal-shortcuts .button svg { width: 18px; height: 18px; }
   .hero-art { min-height: 0; margin-left: -3px; }
   .hero-copy p:not(.eyebrow):not(.hero-date) { font-size: .875rem; }
   .entry-card { padding-inline: 15px; }

@@ -1,4 +1,4 @@
-import type { AnxietyLog, Countdown, DiaryBackup, DiaryData, Entry, EntryDraft, MascotId, Photo } from './types';
+import type { AnxietyLog, Countdown, DiaryBackup, DiaryData, Entry, EntryDraft, MascotId, Photo, Todo } from './types';
 
 export const MASCOTS: readonly MascotId[] = ['dinosaur', 'ladybug', 'butterfly', 'cow', 'bee', 'bunny'];
 // A self-contained backup is deliberately bounded so it can be restored on a phone.
@@ -10,6 +10,8 @@ export const MAX_TEXT_LENGTH = 50000;
 export const MAX_ACTION_COUNT = 32;
 export const MAX_ACTION_LENGTH = 120;
 export const INTENSITY_LABELS = { 1: '有一点', 2: '有点难受', 3: '很难受' } as const;
+export const COMPARISON_LABELS = { less: '比想象中轻一些', same: '和想象中差不多', more: '比想象中难一些', unsure: '还说不清' } as const;
+export const MAX_TODO_TEXT = 500;
 
 export function utf8ByteLength(value: string): number {
   let bytes = 0;
@@ -26,7 +28,7 @@ export function utf8ByteLength(value: string): number {
 }
 
 export function emptyDiary(): DiaryData {
-  return { schemaVersion: 1, entries: [], anxietyLogs: [], countdowns: [], mascot: 'dinosaur', draft: null };
+  return { schemaVersion: 1, entries: [], anxietyLogs: [], countdowns: [], todos: [], mascot: 'dinosaur', draft: null };
 }
 
 export function makeId(prefix = 'item'): string {
@@ -45,6 +47,15 @@ export function isDateKey(value: unknown): value is string {
   if (year < 1900 || year > 2200) return false;
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+export function tomorrowKey(now = new Date()): string {
+  return localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12));
+}
+
+export function nextFollowUp(logs: readonly AnxietyLog[], today: string): AnxietyLog | undefined {
+  return logs.filter(log => log.remindOn && log.remindOn <= today)
+    .sort((a, b) => a.remindOn!.localeCompare(b.remindOn!) || a.occurredAt.localeCompare(b.occurredAt))[0];
 }
 
 /** Calendar-day difference, unaffected by the time of day or daylight-saving changes. */
@@ -95,7 +106,9 @@ function draft(value: unknown): EntryDraft {
   const item = record(value, '草稿');
   const photos = list(item.photos, MAX_ENTRY_PHOTOS, '照片').map(photo);
   if (new Set(photos.map(item => item.id)).size !== photos.length) throw new Error('同一条记录有重复照片');
-  return { text: boundedString(item.text, MAX_TEXT_LENGTH, '日记文字', true), occurredAt: timestamp(item.occurredAt), photos };
+  if (item.kind !== undefined && item.kind !== 'good') throw new Error('日记类型无效');
+  return { ...(item.kind === 'good' ? { kind: 'good' as const } : {}),
+    text: boundedString(item.text, MAX_TEXT_LENGTH, '日记文字', true), occurredAt: timestamp(item.occurredAt), photos };
 }
 
 export function validateDraft(value: unknown): EntryDraft {
@@ -115,7 +128,11 @@ function anxietyLog(value: unknown): AnxietyLog {
   const actions = actionList(row.actions);
   const helpfulActions = actionList(row.helpfulActions);
   if (helpfulActions.some(name => !actions.includes(name))) throw new Error('有效的方法需要先记入尝试过的方法');
+  if (row.remindOn !== undefined && !isDateKey(row.remindOn)) throw new Error('回访日期无效');
+  const comparison = row.comparison;
+  if (comparison !== undefined && comparison !== 'less' && comparison !== 'same' && comparison !== 'more' && comparison !== 'unsure') throw new Error('回顾选项无效');
   return { id: identifier(row.id), occurredAt: timestamp(row.occurredAt), updatedAt: timestamp(row.updatedAt), intensity,
+    ...(row.remindOn ? { remindOn: row.remindOn } : {}), ...(comparison ? { comparison } : {}),
     worry: boundedString(row.worry, MAX_TEXT_LENGTH, '担心的事', true),
     outcome: boundedString(row.outcome, MAX_TEXT_LENGTH, '后来发生的事', true), actions, helpfulActions };
 }
@@ -129,7 +146,7 @@ export function recentHelpfulActions(logs: readonly AnxietyLog[], excludeId?: st
 export function anxietyLogsForReview(logs: readonly AnxietyLog[], day: string, query = ''): AnxietyLog[] {
   const term = query.trim().toLocaleLowerCase();
   if (!term) return logs.filter(log => localDateKey(log.occurredAt) === day).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
-  return logs.filter(log => ['焦虑', INTENSITY_LABELS[log.intensity], log.worry, log.outcome, ...log.actions]
+  return logs.filter(log => ['焦虑', INTENSITY_LABELS[log.intensity], log.worry, log.outcome, log.comparison ? COMPARISON_LABELS[log.comparison] : '', ...log.actions]
     .some(text => text.toLocaleLowerCase().includes(term))).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
 }
 
@@ -152,11 +169,16 @@ export function validateDiaryData(value: unknown): DiaryData {
     return item.kind === 'anniversary' ? { ...date, kind: 'anniversary' } : date;
   });
   const anxietyLogs = list(data.anxietyLogs === undefined ? [] : data.anxietyLogs, 20000, '焦虑记录').map(anxietyLog);
-  if (new Set(entries.map(item => item.id)).size !== entries.length || new Set(countdowns.map(item => item.id)).size !== countdowns.length
-    || new Set(anxietyLogs.map(item => item.id)).size !== anxietyLogs.length) {
+  const todos: Todo[] = list(data.todos === undefined ? [] : data.todos, 20000, '随手清单').map(value => {
+    const row = record(value, '清单项');
+    const text = boundedString(row.text, MAX_TODO_TEXT, '清单内容');
+    if (!text.trim() || typeof row.done !== 'boolean') throw new Error('清单项无效');
+    return { id: identifier(row.id), text, done: row.done, createdAt: timestamp(row.createdAt), updatedAt: timestamp(row.updatedAt) };
+  });
+  if ([entries, countdowns, anxietyLogs, todos].some(rows => new Set(rows.map(item => item.id)).size !== rows.length)) {
     throw new Error('资料含有重复记录编号');
   }
-  return { schemaVersion: 1, entries, anxietyLogs, countdowns, mascot: data.mascot as MascotId, draft: data.draft === null ? null : draft(data.draft) };
+  return { schemaVersion: 1, entries, anxietyLogs, countdowns, todos, mascot: data.mascot as MascotId, draft: data.draft === null ? null : draft(data.draft) };
 }
 
 export function allPhotos(data: DiaryData): Photo[] {

@@ -1,5 +1,5 @@
 // Bump this version whenever the installed application changes.
-const VERSION = 'anxiety-check-ins-v1';
+const VERSION = 'moments-followups-todos-v1';
 const PREFIX = 'sunflower-diary-' + new URL(self.registration.scope).pathname + ':';
 const CACHE = PREFIX + VERSION;
 const root = new URL('./', self.location.href);

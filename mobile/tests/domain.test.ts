@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { anxietyLogsForReview, countdownDays, emptyDiary, entriesForDay, isDateKey, localDateKey, MAX_BACKUP_BYTES, parseBackup, recentHelpfulActions, utf8ByteLength, validateDiaryData } from '../src/domain';
+import { anxietyLogsForReview, countdownDays, emptyDiary, entriesForDay, isDateKey, localDateKey, MAX_BACKUP_BYTES, nextFollowUp, parseBackup, recentHelpfulActions, tomorrowKey, utf8ByteLength, validateDiaryData } from '../src/domain';
 import type { AnxietyLog, DiaryBackup, Entry } from '../src/types';
 
 function entry(id: string, occurredAt: string): Entry {
@@ -16,6 +16,37 @@ const checkIn: AnxietyLog = {
   id: 'check_in', intensity: 2, occurredAt: '2026-11-24T10:00:00.000Z', updatedAt: '2026-11-25T10:00:00.000Z',
   worry: '明天要发言', outcome: '讲完了', actions: ['散步', '聊天'], helpfulActions: ['散步'],
 };
+
+test('reminders use local calendar days, including overdue unanswered follow-ups', () => {
+  assert.equal(tomorrowKey(new Date(2028, 1, 28, 23, 59)), '2028-02-29');
+  assert.equal(tomorrowKey(new Date(2026, 11, 31, 23, 59)), '2027-01-01');
+  const due = { ...checkIn, remindOn: '2026-11-25' };
+  const later = { ...due, id: 'later', remindOn: '2026-11-29' };
+  assert.equal(nextFollowUp([checkIn, later, due], '2026-11-24'), undefined);
+  assert.equal(nextFollowUp([later, due], '2026-11-26'), due);
+  assert.equal(nextFollowUp([checkIn, later], '2026-11-29'), later);
+});
+
+test('shared backups preserve good moments, comparison, reminder and todo fields', () => {
+  const file = backup();
+  const moment = { ...entry('moment',checkIn.occurredAt), kind: 'good' as const };
+  const todo = { id: 'todo', text: 'Get lilies', done: false, createdAt: checkIn.occurredAt, updatedAt: checkIn.occurredAt };
+  file.diary.entries = [moment];
+  file.diary.draft = { kind: 'good', text: '', occurredAt: moment.occurredAt, photos: [{ id: 'photo_good', uri: 'photo://photo_good' }] };
+  file.photos = [{ id: 'photo_good', base64: 'aGk=' }];
+  file.diary.anxietyLogs = [{ ...checkIn, comparison: 'more', remindOn: '2026-11-26' }];
+  file.diary.todos = [todo];
+  assert.deepEqual(parseBackup(JSON.stringify(file)).diary, file.diary);
+  const { todos: _todos, ...older } = file.diary;
+  assert.deepEqual(validateDiaryData(older).todos, []);
+  for (const change of [{ done: 'yes' }, { text: ' ' }, { text: 'x'.repeat(501) }]) {
+    assert.throws(() => validateDiaryData({ ...file.diary, todos: [{ ...todo, ...change }] }));
+  }
+  assert.throws(() => validateDiaryData({ ...file.diary, todos: [todo, todo] }));
+  assert.throws(() => validateDiaryData({ ...file.diary, anxietyLogs: [{ ...checkIn, comparison: 'other' }] }));
+  assert.throws(() => validateDiaryData({ ...file.diary, anxietyLogs: [{ ...checkIn, remindOn: '2026-02-29' }] }));
+  assert.throws(() => validateDiaryData({ ...file.diary, entries: [{ ...moment, kind: 'other' }] }));
+});
 
 test('old backups open without anxiety logs and new backups retain the original event and follow-up', () => {
   const file = backup();

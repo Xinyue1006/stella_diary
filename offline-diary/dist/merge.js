@@ -1,5 +1,28 @@
 export function emptyDiary() {
-  return { schemaVersion: 1, entries: [], countdowns: [], anxietyLogs: [], mascot: 'dinosaur', draft: null };
+  return { schemaVersion: 1, entries: [], countdowns: [], anxietyLogs: [], todos: [], mascot: 'dinosaur', draft: null };
+}
+
+// Old clients serialize just the fields they understand. Restore the newer
+// metadata by record identity, keeping ordinary edits and deletions intact.
+export function retainDailyFields(diary, known) {
+  const kinds = new Map((known.entries ?? []).map(entry => [entry.id, entry.kind]));
+  const followups = new Map((known.anxietyLogs ?? []).map(log => [log.id, log]));
+  const draft = diary.draft;
+  const goodDraft = known.draft?.kind === 'good' ? known.draft : null;
+  // A legacy device can save the marked draft and start its next draft
+  // before it goes online. Match the saved entry to its original event time.
+  const savedDraft = goodDraft && (!draft || draft.occurredAt !== goodDraft.occurredAt)
+    ? diary.entries.find(entry => !kinds.has(entry.id) && entry.occurredAt === goodDraft.occurredAt) : null;
+  return {
+    ...diary,
+    todos: known.todos ?? [],
+    entries: diary.entries.map(entry => kinds.get(entry.id) === 'good' || entry === savedDraft ? { ...entry, kind: 'good' } : entry),
+    draft: draft && goodDraft && !savedDraft ? { ...draft, kind: 'good' } : draft,
+    anxietyLogs: (diary.anxietyLogs ?? []).map(log => {
+      const old = followups.get(log.id);
+      return { ...log, ...(old?.remindOn ? { remindOn: old.remindOn } : {}), ...(old?.comparison ? { comparison: old.comparison } : {}) };
+    })
+  };
 }
 
 export function same(left, right) {
@@ -59,7 +82,7 @@ function mergeRecords(base, local, remote, kind) {
 }
 
 function entryContent(entry) {
-  return { text: entry.text, occurredAt: entry.occurredAt, photos: entry.photos };
+  return { text: entry.text, occurredAt: entry.occurredAt, photos: entry.photos, kind: entry.kind };
 }
 
 function keepDraft(entries, draft) {
@@ -74,10 +97,24 @@ export function preserveDraft(diary, draft) {
   return { ...diary, entries: [...entries.values()] };
 }
 
+// Records absent from the backup are still eligible to arrive from the cloud.
+// Only edits or removals made after restoration have a known common ancestor.
+export function editsSinceRestore(restored, current) {
+  const base = emptyDiary();
+  for (const field of ['entries', 'countdowns', 'anxietyLogs', 'todos']) {
+    const byId = new Map(current[field].map(row => [row.id, row]));
+    base[field] = restored[field].filter(row => !same(row, byId.get(row.id)));
+  }
+  if (!same(restored.draft, current.draft)) base.draft = restored.draft;
+  if (restored.mascot !== current.mascot) base.mascot = restored.mascot;
+  return base;
+}
+
 export function mergeDiary(base, local, remote) {
   const entries = mergeRecords(base.entries, local.entries, remote.entries, 'entry');
   const countdowns = mergeRecords(base.countdowns, local.countdowns, remote.countdowns, 'countdown');
   const anxietyLogs = mergeRecords(base.anxietyLogs ?? [], local.anxietyLogs ?? [], remote.anxietyLogs ?? [], 'anxiety');
+  const todos = mergeRecords(base.todos ?? [], local.todos ?? [], remote.todos ?? [], 'todo');
   let draft;
   if (same(local.draft, remote.draft) || same(remote.draft, base.draft)) draft = local.draft;
   else if (same(local.draft, base.draft)) draft = remote.draft;
@@ -90,6 +127,7 @@ export function mergeDiary(base, local, remote) {
     entries: [...entries.values()],
     countdowns: [...countdowns.values()],
     anxietyLogs: [...anxietyLogs.values()],
+    todos: [...todos.values()],
     mascot: local.mascot === base.mascot ? remote.mascot : local.mascot,
     draft
   };

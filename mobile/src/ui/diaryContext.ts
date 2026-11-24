@@ -7,7 +7,7 @@ export type DiaryContextValue = ReturnType<typeof useDiary> & {
   setReviewDate: (date: string) => void;
   reviewQuery: string;
   setReviewQuery: (query: string) => void;
-  openWriter: (entry?: Entry, date?: string) => void;
+  openWriter: (entry?: Entry, date?: string, kind?: 'good') => void;
   openAnxiety: (log?: AnxietyLog) => void;
 };
 

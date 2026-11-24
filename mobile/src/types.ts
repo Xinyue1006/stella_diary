@@ -6,6 +6,7 @@ export interface Photo {
 }
 
 export interface EntryDraft {
+  kind?: 'good';
   text: string;
   occurredAt: string;
   photos: Photo[];
@@ -34,6 +35,16 @@ export interface AnxietyLog {
   outcome: string;
   actions: string[];
   helpfulActions: string[];
+  remindOn?: string;
+  comparison?: 'less' | 'same' | 'more' | 'unsure';
+}
+
+export interface Todo {
+  id: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+  done: boolean;
 }
 
 export interface DiaryData {
@@ -41,6 +52,7 @@ export interface DiaryData {
   entries: Entry[];
   anxietyLogs: AnxietyLog[];
   countdowns: Countdown[];
+  todos: Todo[];
   mascot: MascotId;
   draft: EntryDraft | null;
 }

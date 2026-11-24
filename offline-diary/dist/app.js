@@ -54,6 +54,13 @@ const paths = {
 
 const intensityLabels = ['有一点', '有点难受', '很难受'];
 const commonActions = ['出去走走', '找人聊聊', '休息一下'];
+const comparisons = { less: '比想象中轻一些', same: '和想象中差不多', more: '比想象中难一些', unsure: '还说不清' };
+
+function tomorrow() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return dayKey(date);
+}
 
 function icon(name) {
   return `<svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.flower}</svg>`;
@@ -183,7 +190,7 @@ function cancelDraftTimer() {
 }
 
 async function persistDraft(editor) {
-  if (editor.id || editor.closing) return;
+  if (editor.id || editor.detached || editor.closing) return;
   const version = editor.version;
   const snapshot = hasContent(editor.draft) ? copy(editor.draft) : null;
   const write = editor.draftWrite.catch(() => {}).then(async () => {
@@ -204,6 +211,7 @@ async function persistDraft(editor) {
 
 function scheduleDraft(editor) {
   cancelDraftTimer();
+  if (editor.detached) { setDraftStatus('点保存收好这条记录。另一份草稿会留着。'); return; }
   if (editor.id) { setDraftStatus('修改后，点「保存修改」收好。'); return; }
   setDraftStatus('正在保存草稿…');
   draftTimer = setTimeout(() => { draftTimer = null; void persistDraft(editor).catch(() => {}); }, 600);
@@ -269,7 +277,19 @@ async function requestBack(depth = state.views.length - 1) {
   const view = currentView();
   if (!view) return;
   document.activeElement?.blur();
-  if (view.kind === 'photo') { finishBack(depth); return; }
+  if (['photo', 'todos', 'good-memory'].includes(view.kind)) { finishBack(depth); return; }
+  if (view.kind === 'todo') {
+    if (view.text !== (view.original?.text ?? '')) {
+      const choice = await ask('清单上的这件事还没保存', '要把刚才写的内容放进清单吗？', [
+        { value: 'cancel', label: '继续写' }, { value: 'discard', label: '放弃并返回', className: 'quiet' },
+        { value: 'save', label: '保存并返回', className: 'primary' },
+      ]);
+      if (choice === 'save') { await saveTodoView(depth); return; }
+      if (choice !== 'discard') return;
+    }
+    finishBack(depth);
+    return;
+  }
   if (view.kind === 'anxiety') {
     if (anxietyChanged(view)) {
       const choice = await ask('这条焦虑记录还没保存', '想把刚才写下的内容收好吗？', [
@@ -297,9 +317,9 @@ async function requestBack(depth = state.views.length - 1) {
     return;
   }
   if (view.kind === 'editor') {
-    if (view.id) {
+    if (view.id || view.detached) {
       if (JSON.stringify(view.draft) !== view.initial) {
-        const choice = await ask('修改还没保存', '可以保存这次修改后返回，或保留原来的记录。', [
+        const choice = await ask('这次写的内容还没保存', '想把刚才写下的内容收好吗？', [
           { value: 'cancel', label: '继续写' },
           { value: 'discard', label: '放弃修改并返回', className: 'quiet' },
           { value: 'save', label: '保存并返回', className: 'primary' },
@@ -322,12 +342,15 @@ async function requestBack(depth = state.views.length - 1) {
   }
 }
 
-function openEditor(id, date) {
+function openEditor(id, date, kind) {
   const entry = id && state.data.entries.find((item) => item.id === id);
   if (id && !entry) { toast('这条记录暂时没有找到。', true); return; }
   const savedDraft = state.data.draft;
-  const draft = entry ? { text: entry.text, occurredAt: entry.occurredAt, photos: copy(entry.photos) } : savedDraft && hasContent(savedDraft) ? copy(savedDraft) : newDraft(date);
-  openView({ kind: 'editor', id: entry?.id, originalEntry: entry, expectedDraft: savedDraft, draftWrite: Promise.resolve(), draft, initial: JSON.stringify(draft), timeInput: localDateTime(draft.occurredAt), version: 0, persistedVersion: 0, completed: false, closing: false });
+  const detached = !entry && savedDraft && hasContent(savedDraft) && savedDraft.kind !== kind;
+  const draft = entry ? { text: entry.text, occurredAt: entry.occurredAt, photos: copy(entry.photos) }
+    : !detached && savedDraft && hasContent(savedDraft) ? copy(savedDraft) : newDraft(date);
+  if ((entry ? entry.kind : kind) === 'good') draft.kind = 'good';
+  openView({ kind: 'editor', id: entry?.id, originalEntry: entry, detached, expectedDraft: detached ? null : savedDraft, draftWrite: Promise.resolve(), draft, initial: JSON.stringify(draft), timeInput: localDateTime(draft.occurredAt), version: 0, persistedVersion: 0, completed: false, closing: false });
 }
 
 function openAnxiety(id, date) {
@@ -340,6 +363,8 @@ function openAnxiety(id, date) {
     outcome: original?.outcome ?? '',
     actions: [...(original?.actions ?? [])],
     helpfulActions: [...(original?.helpfulActions ?? [])],
+    remindOn: original?.remindOn ?? null,
+    comparison: original?.comparison ?? null,
   };
   openView({ kind: 'anxiety', id, original, draft, initial: JSON.stringify(draft), custom: '', choices: [...new Set([...commonActions, ...draft.actions])] });
 }
@@ -369,6 +394,9 @@ async function saveAnxietyView(depth = state.views.length - 1) {
   if (view?.kind !== 'anxiety' || !app.querySelector('#anxiety-form')?.reportValidity()) return;
   if (view.custom.trim() && !addCustomAction(view)) return;
   const snapshot = copy(view.draft);
+  if (snapshot.remindOn && snapshot.remindOn <= dayKey() &&
+      ((snapshot.outcome.trim() && snapshot.outcome !== view.original?.outcome) ||
+       (snapshot.comparison && snapshot.comparison !== view.original?.comparison))) snapshot.remindOn = null;
   await runBusy(async () => {
     await mutate(() => storage.saveAnxietyLog(snapshot, view.id, view.original));
     view.initial = JSON.stringify(view.draft);
@@ -426,15 +454,21 @@ async function saveCountdownView(depth = state.views.length - 1) {
   });
 }
 
+function viewTitle(view) {
+  if (view.kind === 'editor') return view.draft.kind === 'good' ? '今天有一点好' : view.id ? '修改记录' : '写下一点';
+  if (view.kind === 'todo') return view.original ? '改一件事' : '记一件事';
+  return { countdown: '一个想记住的日子', anxiety: '焦虑记录', photo: '照片', todos: '随手清单', 'good-memory': '翻一件好事' }[view.kind];
+}
+
 function renderHeader(view) {
   phoneBack.hidden = !view && !state.tabTrail.length && state.tab === 'today';
   phoneBack.dataset.action = view ? 'back' : 'back-tab';
   phoneBack.lastElementChild.textContent = view?.kind === 'photo' ? '返回日记' : '返回';
-  const formId = { editor: 'entry-form', countdown: 'countdown-form', anxiety: 'anxiety-form' }[view?.kind];
+  const formId = { editor: 'entry-form', countdown: 'countdown-form', anxiety: 'anxiety-form', todo: 'todo-form' }[view?.kind];
   phoneSave.hidden = !formId;
   if (formId) {
     phoneSave.setAttribute('form', formId);
-    phoneSave.textContent = view.kind === 'countdown' ? '收好这个日子' : view.id ? '保存修改' : '收好这条记录';
+    phoneSave.textContent = view.kind === 'todo' ? '保存' : view.kind === 'countdown' ? '收好这个日子' : view.id ? '保存修改' : '收好这条记录';
   } else {
     phoneSave.removeAttribute('form');
   }
@@ -444,13 +478,13 @@ function renderHeader(view) {
     header.innerHTML = state.tab === 'today' ? '' : `<button type="button" class="back-button" data-action="back-tab">${icon('back')}<span>返回</span></button><span class="header-title" aria-hidden="true"></span><div class="header-actions"></div>`;
     return;
   }
-  const title = view.kind === 'editor' ? view.id ? '修改记录' : '写下一点' : view.kind === 'countdown' ? '一个想记住的日子' : view.kind === 'anxiety' ? '焦虑记录' : '照片';
+  const title = viewTitle(view);
   const back = view.kind === 'photo' ? '返回日记' : '返回';
   header.innerHTML = `<button type="button" class="back-button" data-action="back">${icon('back')}<span>${back}</span></button><h1 class="header-title">${title}</h1><div class="header-actions">${view.kind === 'editor' ? button('保存', 'save-entry', { className: 'quiet', symbol: 'check' }) : ''}</div>`;
 }
 
 function entryMarkup(entry, showDate = false) {
-  return `<article class="entry-card" data-entry-card="${escape(entry.id)}"><div class="entry-meta"><div class="entry-time">${icon('flower')}<time datetime="${escape(entry.occurredAt)}">${showDate ? `${escape(dateLabel(entry.occurredAt, true))} · ` : ''}${escape(timeLabel(entry.occurredAt))}</time></div><div class="entry-tools"><button type="button" class="icon-button" data-action="edit-entry" data-id="${escape(entry.id)}" aria-label="修改 ${escape(timeLabel(entry.occurredAt))} 的记录">${icon('edit')}</button><button type="button" class="icon-button" data-action="delete-entry" data-id="${escape(entry.id)}" aria-label="删除 ${escape(timeLabel(entry.occurredAt))} 的记录">${icon('trash')}</button></div></div>${entry.text ? `<p class="entry-body">${escape(entry.text)}</p>` : ''}${photoStrip(entry.photos)}</article>`;
+  return `<article class="entry-card${entry.kind === 'good' ? ' good-card' : ''}" data-entry-card="${escape(entry.id)}">${entry.kind === 'good' ? '<p class="good-label">今天有一点好</p>' : ''}<div class="entry-meta"><div class="entry-time">${icon('flower')}<time datetime="${escape(entry.occurredAt)}">${showDate ? `${escape(dateLabel(entry.occurredAt, true))} · ` : ''}${escape(timeLabel(entry.occurredAt))}</time></div><div class="entry-tools"><button type="button" class="icon-button" data-action="edit-entry" data-id="${escape(entry.id)}" aria-label="修改 ${escape(timeLabel(entry.occurredAt))} 的记录">${icon('edit')}</button><button type="button" class="icon-button" data-action="delete-entry" data-id="${escape(entry.id)}" aria-label="删除 ${escape(timeLabel(entry.occurredAt))} 的记录">${icon('trash')}</button></div></div>${entry.text ? `<p class="entry-body">${escape(entry.text)}</p>` : ''}${photoStrip(entry.photos)}</article>`;
 }
 
 function photoStrip(photos, editable = false) {
@@ -461,13 +495,14 @@ function photoStrip(photos, editable = false) {
 function anxietyMarkup(log, showDate) {
   const id = escape(log.id);
   const time = escape(timeLabel(log.occurredAt));
-  const hasFollowup = log.outcome || log.actions.length;
+  const hasFollowup = log.outcome || log.actions.length || log.comparison;
   return `<article class="entry-card anxiety-card" data-anxiety-card="${id}">
     <div class="entry-meta"><div class="entry-time">${icon('heart')}<time datetime="${escape(log.occurredAt)}">${showDate ? escape(dateLabel(log.occurredAt, true)) + ' · ' : ''}${time}</time></div>
       <button type="button" class="icon-button" data-action="delete-anxiety" data-id="${id}" aria-label="删除 ${time} 的焦虑记录">${icon('trash')}</button></div>
     <h3 class="anxiety-level">焦虑<span>${intensityLabels[log.intensity - 1]}</span></h3>
     ${log.worry ? `<p class="entry-body">${escape(log.worry)}</p>` : ''}
     ${log.outcome ? `<div class="anxiety-after"><strong>后来</strong><p class="entry-body">${escape(log.outcome)}</p></div>` : ''}
+    ${log.comparison ? `<p class="comparison-note">和当时想的相比：${escape(comparisons[log.comparison])}</p>` : ''}
     ${log.actions.length ? `<ul class="anxiety-methods" aria-label="当时试过的做法">${log.actions.map(action => `<li>${escape(action)}${log.helpfulActions.includes(action) ? '<span>有帮助</span>' : ''}</li>`).join('')}</ul>` : ''}
     ${button(hasFollowup ? '修改这条记录' : '后来怎么样了？', 'edit-anxiety', { className: 'quiet anxiety-followup', attributes: `data-id="${id}"`, symbol: 'edit' })}
   </article>`;
@@ -477,8 +512,8 @@ function diaryTimeline(date, query = '') {
   const rows = [...state.data.entries, ...(state.data.anxietyLogs ?? [])].filter(item => {
     if (!query) return dayKey(item.occurredAt) === date;
     const terms = 'intensity' in item
-      ? ['焦虑', intensityLabels[item.intensity - 1], item.worry, item.outcome, ...item.actions, ...(item.helpfulActions.length ? ['有帮助'] : [])]
-      : [item.text];
+      ? ['焦虑', intensityLabels[item.intensity - 1], item.worry, item.outcome, comparisons[item.comparison] ?? '', ...item.actions, ...(item.helpfulActions.length ? ['有帮助'] : [])]
+      : [item.text, item.kind === 'good' ? '今天有一点好' : ''];
     return [...terms, dayKey(item.occurredAt)].some(term => term.toLocaleLowerCase().includes(query));
   });
   rows.sort((a, b) => query ? b.occurredAt.localeCompare(a.occurredAt) : a.occurredAt.localeCompare(b.occurredAt));
@@ -499,17 +534,60 @@ function countdownMarkup(item, compact = false) {
   </article>`;
 }
 
+function dueFollowupMarkup() {
+  const todayKey = dayKey();
+  const log = (state.data.anxietyLogs ?? []).filter(item => item.remindOn && item.remindOn <= todayKey)
+    .sort((a, b) => a.remindOn.localeCompare(b.remindOn) || a.occurredAt.localeCompare(b.occurredAt))[0];
+  if (!log) return '';
+  const attributes = `data-id="${escape(log.id)}"`;
+  return `<section class="followup-card" data-followup-card="${escape(log.id)}"><div class="followup-heading">
+    <img src="${escape(currentMascot().image)}" alt=""><div><p class="eyebrow">${escape(currentMascot().name)}来问问你</p><h2>那件事，后来怎么样了？</h2></div></div>
+    <p class="field-help">${escape(dateLabel(log.occurredAt, true))}记下的担心</p>
+    ${log.worry ? `<p class="followup-worry">${escape(log.worry)}</p>` : `<p class="followup-worry">那天你选了「${escape(intensityLabels[log.intensity - 1])}」。</p>`}
+    <div class="followup-actions">${button('写两句', 'followup-now', { className: 'secondary', attributes })}
+    ${button('明天再问', 'snooze-followup', { className: 'quiet', attributes })}
+    ${button('收起这次回访', 'dismiss-followup', { className: 'text-action', attributes })}</div></section>`;
+}
+
+async function rescheduleFollowup(id, remindOn) {
+  const log = state.data.anxietyLogs.find(item => item.id === id);
+  if (!log) return;
+  await runBusy(async () => {
+    await mutate(() => storage.saveAnxietyLog({ remindOn }, id, log));
+    render();
+    toast(remindOn ? '明天再打开日记时，小猪会来问你。' : '这次回访已收起。');
+  });
+}
+
+function recallGood() {
+  const current = currentView();
+  const choices = state.data.entries.filter(entry => entry.kind === 'good' && entry.id !== current?.entryId);
+  if (!choices.length) { toast('暂时没有其他小事了。'); return; }
+  const entryId = choices[Math.floor(Math.random() * choices.length)].id;
+  if (current?.kind === 'good-memory') { current.entryId = entryId; render(); }
+  else openView({ kind: 'good-memory', entryId });
+}
+
+function renderGoodMemory(view) {
+  const entry = state.data.entries.find(item => item.id === view.entryId && item.kind === 'good');
+  const hasOthers = state.data.entries.some(item => item.kind === 'good' && item.id !== view.entryId);
+  return `<section class="page">${entry ? entryMarkup(entry, true) : '<p>这件小事已移除。</p>'}
+    ${hasOthers ? button('再翻一件', 'recall-good', { className: 'quiet recall-good', symbol: 'flower' }) : ''}</section>`;
+}
+
 function renderToday() {
   const mascot = currentMascot();
   const timeline = diaryTimeline(dayKey());
   const byDate = [...state.data.countdowns].sort((a, b) => a.date.localeCompare(b.date));
   const nextDay = byDate.find(item => dateDifference(item.date) >= 0) || byDate.reverse().find(item => item.kind === 'anniversary');
-  const draft = state.data.draft && hasContent(state.data.draft);
+  const draft = state.data.draft;
   return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div><button type="button" class="sync-shortcut" data-action="show-sync" aria-label="查看私人同步状态">${icon('cloud')}<span data-sync-label></span></button></div>
     <section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p><div class="hero-buttons">
-      ${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}
+      ${button(draft && !draft.kind ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}
       ${button('我现在有点焦虑', 'new-anxiety', { className: 'quiet', symbol: 'heart' })}
     </div></div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section>
+    <div class="journal-shortcuts">${button(draft?.kind === 'good' ? '继续写今天的一点好' : '今天有一点好', 'new-good', { className: 'good-shortcut', symbol: 'flower' })}${button('随手清单', 'open-todos', { className: 'quiet', symbol: 'check' })}</div>
+    ${dueFollowupMarkup()}
     <div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${timeline.count ? `<span class="muted">${timeline.count} 条 · 按发生时间</span>` : ''}</div>${timeline.html || emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div>
     <aside class="journal-aside"><div class="section-heading"><h2>期待与纪念</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有即将到来的日子</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
 }
@@ -538,7 +616,7 @@ function reviewResults() {
 }
 
 function renderReview() {
-  return `<section class="page page-stack"><div class="page-heading"><div><p class="eyebrow">一页一页，慢慢翻</p><h1>回看</h1><p class="muted">把记得的，慢慢找回来。</p></div></div><label class="search-field">${icon('search')}<span class="sr-only">搜索全部日记</span><input class="field-control" type="search" id="journal-search" value="${escape(state.query)}" placeholder="找一段话，或一件小事" maxlength="200" autocomplete="off"></label><div data-calendar ${state.query.trim() ? 'hidden' : ''}>${calendarMarkup()}</div><div class="page-stack" data-review-results>${reviewResults()}</div></section>`;
+  return `<section class="page page-stack"><div class="page-heading"><div><p class="eyebrow">一页一页，慢慢翻</p><h1>回看</h1><p class="muted">把记得的，慢慢找回来。</p></div></div>${button('随机翻一件好事', 'recall-good', { className: 'quiet recall-good', symbol: 'flower', attributes: state.data.entries.some(entry => entry.kind === 'good') ? '' : 'hidden' })}<label class="search-field">${icon('search')}<span class="sr-only">搜索全部日记</span><input class="field-control" type="search" id="journal-search" value="${escape(state.query)}" placeholder="找一段话，或一件小事" maxlength="200" autocomplete="off"></label><div data-calendar ${state.query.trim() ? 'hidden' : ''}>${calendarMarkup()}</div><div class="page-stack" data-review-results>${reviewResults()}</div></section>`;
 }
 
 function renderCountdowns() {
@@ -590,9 +668,11 @@ function updateSyncStatus(status) {
 
 function receiveSyncedDiary(diary) {
   state.data = diary;
+  if (['todos', 'good-memory'].includes(currentView()?.kind) && !state.busy && !state.dialogOpen) { render(); return; }
   // Keep any open editor, date picker, photo viewer or search field in place.
   if (currentView() || state.loading || state.error) return;
   if (state.tab === 'review' && app.querySelector('[data-review-results]')) {
+    app.querySelector('[data-action="recall-good"]').hidden = !diary.entries.some(entry => entry.kind === 'good');
     app.querySelector('[data-calendar]').innerHTML = calendarMarkup();
     app.querySelector('[data-review-results]').innerHTML = reviewResults();
     void hydratePhotos();
@@ -606,13 +686,13 @@ function renderSettings() {
     <div class="page-heading"><div><p class="eyebrow">只属于你的小角落</p><h1>我的</h1></div></div>
     <section class="settings-card" aria-labelledby="sync-heading">
       <div class="section-heading"><h2 id="sync-heading">私人同步</h2><span class="status-pill" data-sync-label></span></div>
-      <p>在电脑和 iPhone 用同一个 ChatGPT 账号打开这本日记。日记、照片、草稿、焦虑记录、期待与纪念日和小猪都会自动同步。</p>
+      <p>在电脑和 iPhone 用同一个 ChatGPT 账号打开这本日记。日记、照片、草稿、焦虑记录、随手清单、期待与纪念日和小猪都会自动同步。</p>
       <div class="sync-detail"><p data-sync-message role="status"></p><small class="field-help" data-sync-time hidden></small></div>
       <div class="sync-actions">${button('立即同步', 'sync-now', { className: 'secondary', symbol: 'cloud' })}<a class="button primary" href="/signin-with-chatgpt?return_to=%2F" target="_top" data-sync-signin hidden>登录 ChatGPT</a></div>
     </section>
     <section class="settings-card"><div class="section-heading"><h2>今天让谁陪你？</h2></div><div class="mascot-grid">${mascots.map((mascot) => `<button type="button" class="mascot-card${mascot.id === state.data.mascot ? ' is-selected' : ''}" data-action="select-mascot" data-id="${escape(mascot.id)}" aria-pressed="${mascot.id === state.data.mascot}" style="--mascot-color:${escape(mascot.color)}"><img class="mascot-thumb" src="${escape(mascot.image)}" alt=""><span>${escape(mascot.name)}${mascot.id === state.data.mascot ? icon('check') : ''}</span></button>`).join('')}</div></section>
     <section class="settings-card backup-card"><div class="section-heading"><h2>完整备份</h2></div>
-      <p>可以把日记、照片、草稿、焦虑记录、期待与纪念日和小猪一起导出到 iCloud Drive。</p>
+      <p>可以把日记、照片、草稿、焦虑记录、随手清单、期待与纪念日和小猪一起导出到 iCloud Drive。</p>
       <div class="button-row">${button('导出完整备份', 'export-backup', { className: 'primary', symbol: 'download' })}${button('从备份恢复', 'choose-backup', { className: 'secondary', symbol: 'upload' })}</div>
       <input id="backup-file" type="file" accept="application/json,.json" class="sr-only" hidden>
       <p class="field-help">每张照片最多 6 MB。完整备份中的照片合计最多 24 MB，备份文件最多 40 MB。</p>
@@ -625,7 +705,7 @@ function renderSettings() {
 }
 
 function renderEditor(editor) {
-  return `<section class="page editor-view"><form id="entry-form" class="editor-form"><div class="field"><label class="field-label" for="occurred-at">事情发生在</label><input class="field-control" id="occurred-at" name="occurredAt" type="datetime-local" value="${escape(editor.timeInput)}" required step="60"><p class="field-help">现在想起以前的事，也可以改成当时的日期和时间。</p></div><div class="field"><label class="field-label sr-only" for="entry-text">日记内容</label><textarea class="field-control textarea" id="entry-text" name="text" rows="9" maxlength="50000" placeholder="刚刚发生了什么，或是突然想起了什么…">${escape(editor.draft.text)}</textarea></div><div data-editor-photos>${photoStrip(editor.draft.photos, true)}</div><div class="editor-toolbar">${button('加几张照片', 'choose-photo', { className: 'secondary', symbol: 'image' })}<span class="field-help">${editor.draft.photos.length}/12 张</span></div><input id="entry-photos" type="file" accept="image/*" multiple class="sr-only" hidden><div class="editor-footer"><p class="draft-status" data-draft-status role="status">${editor.id ? '修改后，点「保存修改」收好。' : '草稿会自动保存在本机，联网后会同步。'}</p><button type="submit" class="button primary">${icon('check')}<span>${editor.id ? '保存修改' : '收好这条记录'}</span></button></div></form></section>`;
+  return `<section class="page editor-view"><form id="entry-form" class="editor-form"><div class="field"><label class="field-label" for="occurred-at">事情发生在</label><input class="field-control" id="occurred-at" name="occurredAt" type="datetime-local" value="${escape(editor.timeInput)}" required step="60"><p class="field-help">现在想起以前的事，也可以改成当时的日期和时间。</p></div><div class="field"><label class="field-label${editor.draft.kind === 'good' ? '' : ' sr-only'}" for="entry-text">${editor.draft.kind === 'good' ? '今天有什么想分享的？' : '日记内容'}</label><textarea class="field-control textarea" id="entry-text" name="text" rows="9" maxlength="50000" placeholder="${editor.draft.kind === 'good' ? '看到的、想到的，都可以讲给小猪听…' : '刚刚发生了什么，或是突然想起了什么…'}">${escape(editor.draft.text)}</textarea></div><div data-editor-photos>${photoStrip(editor.draft.photos, true)}</div><div class="editor-toolbar">${button('加几张照片', 'choose-photo', { className: 'secondary', symbol: 'image' })}<span class="field-help">${editor.draft.photos.length}/12 张</span></div><input id="entry-photos" type="file" accept="image/*" multiple class="sr-only" hidden><div class="editor-footer"><p class="draft-status" data-draft-status role="status">${editor.detached ? '点保存收好这条记录。另一份草稿会留着。' : editor.id ? '修改后，点「保存修改」收好。' : '草稿会自动保存在本机，联网后会同步。'}</p><button type="submit" class="button primary">${icon('check')}<span>${editor.id ? '保存修改' : '收好这条记录'}</span></button></div></form></section>`;
 }
 
 function renderCountdownForm(view) {
@@ -636,6 +716,60 @@ function renderCountdownForm(view) {
     <div class="field"><label class="field-label" for="countdown-title">这是什么日子？</label><input class="field-control" id="countdown-title" name="title" placeholder="例如：第一次一起旅行" maxlength="80" value="${escape(view.title)}" required autocomplete="off"></div>
     <div class="field"><label class="field-label" for="countdown-date">它在哪一天？</label><input class="field-control" id="countdown-date" name="date" type="date" min="1900-01-01" max="2200-12-31" value="${escape(view.date)}" required></div>
     <div class="editor-footer"><button type="submit" class="button primary">${icon('check')}<span>收好这个日子</span></button></div></form></section>`;
+}
+
+function todoMarkup(item) {
+  const id = escape(item.id);
+  const label = escape(item.text);
+  return `<li class="todo-row${item.done ? ' is-done' : ''}" data-todo-id="${id}">
+    <button type="button" class="todo-toggle" role="checkbox" aria-checked="${item.done}" data-action="toggle-todo" data-id="${id}">
+      <span class="todo-check" aria-hidden="true">${item.done ? icon('check') : ''}</span><span>${label}</span></button>
+    <div class="entry-tools"><button type="button" class="icon-button" data-action="edit-todo" data-id="${id}" aria-label="修改：${label}">${icon('edit')}</button>
+      <button type="button" class="icon-button" data-action="delete-todo" data-id="${id}" aria-label="移除：${label}">${icon('trash')}</button></div></li>`;
+}
+
+function renderTodos() {
+  const todos = state.data.todos ?? [];
+  const pending = todos.filter(item => !item.done);
+  const done = todos.filter(item => item.done);
+  return `<section class="page page-stack todo-page"><div class="section-heading"><p>想做的事，先放在这里。</p>
+    ${button('记一件事', 'new-todo', { className: 'secondary', symbol: 'add' })}</div>
+    ${pending.length ? `<ul class="todo-list" aria-label="想做的事">${pending.map(todoMarkup).join('')}</ul>` : ''}
+    ${done.length ? `<details class="todo-done" ${currentView().showDone ? 'open' : ''}><summary>已经做过的事</summary><ul class="todo-list">${done.map(todoMarkup).join('')}</ul></details>` : ''}</section>`;
+}
+
+function renderTodoForm(view) {
+  return `<section class="page editor-view"><form id="todo-form" class="editor-form"><div class="field">
+    <label for="todo-text">想做什么？</label><textarea id="todo-text" class="field-control" required maxlength="500" rows="3"
+      placeholder="比如，哪天想去那家小店看看">${escape(view.text)}</textarea></div>
+    <div class="editor-footer"><button type="submit" class="button primary">${icon('check')}<span>保存</span></button></div></form></section>`;
+}
+
+async function saveTodoView(depth = state.views.length - 1) {
+  const view = currentView();
+  if (view?.kind !== 'todo' || !app.querySelector('#todo-form')?.reportValidity()) return;
+  const text = view.text.trim();
+  if (!text) { toast('写下想做的事就可以保存。', true); return; }
+  await runBusy(async () => {
+    await mutate(() => storage.saveTodo({ text }, view.original?.id, view.original));
+    finishBack(depth);
+  });
+}
+
+async function changeTodo(action, id) {
+  const item = state.data.todos?.find(row => row.id === id);
+  if (!item) { render(); return; }
+  if (action === 'edit-todo') { openView({ kind: 'todo', original: item, text: item.text }); return; }
+  if (action === 'delete-todo') {
+    const answer = await ask('从清单移除这件事？', item.text, [
+      { value: 'cancel', label: '保留' }, { value: 'delete', label: '移除', className: 'danger' },
+    ]);
+    if (answer !== 'delete') return;
+  }
+  await runBusy(async () => {
+    await mutate(() => action === 'delete-todo' ? storage.removeTodo(id, item) : storage.saveTodo({ done: !item.done }, id, item));
+    render();
+  });
 }
 
 function renderPhotoViewer(view) {
@@ -663,10 +797,18 @@ function renderAnxietyForm(view) {
     .filter(log => log.occurredAt <= draft.occurredAt && log.helpfulActions.length)
     .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))[0];
   const intensities = intensityLabels.map((label, index) => `<label class="anxiety-option"><input type="radio" name="anxiety-intensity" value="${index + 1}" required${draft.intensity === index + 1 ? ' checked' : ''}><span>${label}</span></label>`).join('');
+  const comparison = `<fieldset class="anxiety-group"><legend>和当时想的相比，实际怎么样？ <small>选填</small></legend>
+    <div class="anxiety-options comparison-options">${Object.entries(comparisons).map(([value, label]) => `<label class="anxiety-option"><input type="radio" name="anxiety-comparison" value="${value}"${draft.comparison === value ? ' checked' : ''}><span>${label}</span></label>`).join('')}</div>
+    <button type="button" class="button text-action" data-action="clear-comparison"${draft.comparison ? '' : ' hidden'}>清除选择</button></fieldset>`;
+  const scheduled = draft.remindOn && draft.remindOn > dayKey();
+  const reminder = `<div class="reminder-field"><label><input type="checkbox" id="anxiety-reminder"${scheduled ? ' checked' : ''}>
+    <span>${scheduled && draft.remindOn !== tomorrow() ? escape(dateLabel(draft.remindOn)) + '再问我' : '明天问问我'}</span></label>
+    <p class="field-help">到时候打开日记，小猪会来问问你。</p></div>`;
   const worry = `<div class="field"><label for="anxiety-worry">${id ? '当时担心的事' : '心里的担心'} <small>选填</small></label>
     <textarea class="field-control" id="anxiety-worry" rows="3" maxlength="50000" placeholder="${id ? '那时你担心什么？' : '写一句就好，也可以先空着。'}">${escape(draft.worry)}</textarea></div>`;
   const followup = id ? `<div class="field"><label for="anxiety-outcome">后来发生了什么？ <small>选填</small></label>
     <textarea class="field-control" id="anxiety-outcome" rows="3" maxlength="50000" placeholder="事情后来怎么了，你现在有什么感觉？">${escape(draft.outcome)}</textarea></div>
+    ${comparison}
     <fieldset class="anxiety-group"><legend>当时试过什么？</legend><div class="anxiety-options" data-anxiety-actions>${actionOptions('anxiety-action', view.choices, draft.actions)}</div>
       <div class="anxiety-custom-row"><label for="anxiety-custom" class="sr-only">其他做法</label><input class="field-control" type="text" id="anxiety-custom" maxlength="120" placeholder="写下其他做法" value="${escape(view.custom)}">
       ${button('添加', 'add-anxiety-action', { className: 'secondary', symbol: 'add' })}</div></fieldset>
@@ -676,9 +818,10 @@ function renderAnxietyForm(view) {
       <div><p class="eyebrow">${escape(mascot.name)}陪你记</p><h2>${id ? '后来怎么样了？' : historical ? '当时最担心什么？' : '现在最担心什么？'}</h2>
       <p class="field-help">${id || historical ? escape(dateLabel(draft.occurredAt, true)) + ' · ' + escape(timeLabel(draft.occurredAt)) : '只选一下感受，也可以保存。'}</p></div></div>
     ${recent ? `<p class="anxiety-suggestion" data-anxiety-suggestion>你之前记过，「${escape(recent.helpfulActions[0])}」对你有帮助。</p>` : ''}
-    ${followup}
+    ${id ? worry + followup : ''}
     <fieldset class="anxiety-group"><legend>${id || historical ? '当时的焦虑有多强？' : '此刻的焦虑有多强？'}</legend><div class="anxiety-options intensity-options">${intensities}</div></fieldset>
-    ${worry}
+    ${id ? '' : worry}
+    ${reminder}
     <div class="editor-footer"><button type="submit" class="button primary">${icon('check')}<span>${id ? '保存修改' : '收好这条记录'}</span></button></div>
   </form></section>`;
 }
@@ -729,9 +872,12 @@ function render() {
     app.innerHTML = `<section class="page">${emptyState('暂时没能打开日记', state.error)}${button('重新读取', 'retry-load', { className: 'primary' })}</section>`;
     return;
   }
-  const title = view ? ({ editor: '写日记', photo: '照片', anxiety: '焦虑记录', countdown: '加一个日子' })[view.kind] : ({ today: '今天', review: '回看', countdowns: '期待', settings: '我的' })[state.tab];
+  const title = view ? viewTitle(view) : ({ today: '今天', review: '回看', countdowns: '期待', settings: '我的' })[state.tab];
   document.title = `${title} · 小猪向阳日记`;
   if (view?.kind === 'editor') app.innerHTML = renderEditor(view);
+  else if (view?.kind === 'todos') app.innerHTML = renderTodos();
+  else if (view?.kind === 'todo') app.innerHTML = renderTodoForm(view);
+  else if (view?.kind === 'good-memory') app.innerHTML = renderGoodMemory(view);
   else if (view?.kind === 'anxiety') app.innerHTML = renderAnxietyForm(view);
   else if (view?.kind === 'countdown') app.innerHTML = renderCountdownForm(view);
   else if (view?.kind === 'photo') app.innerHTML = renderPhotoViewer(view);
@@ -852,6 +998,24 @@ async function handleAction(action, element) {
     case 'show-sync': setTab('settings'); break;
     case 'sync-now': requestSync?.(); break;
     case 'new-entry': openEditor(); break;
+    case 'new-good': openEditor(undefined, undefined, 'good'); break;
+    case 'recall-good': recallGood(); break;
+    case 'open-todos': openView({ kind: 'todos', showDone: false }); break;
+    case 'new-todo': openView({ kind: 'todo', text: '' }); break;
+    case 'edit-todo':
+    case 'delete-todo':
+    case 'toggle-todo': await changeTodo(action, element.dataset.id); break;
+    case 'followup-now': openAnxiety(element.dataset.id); break;
+    case 'snooze-followup': await rescheduleFollowup(element.dataset.id, tomorrow()); break;
+    case 'dismiss-followup': await rescheduleFollowup(element.dataset.id, null); break;
+    case 'clear-comparison': {
+      const view = currentView();
+      if (view?.kind !== 'anxiety') break;
+      view.draft.comparison = null;
+      for (const input of app.querySelectorAll('[name="anxiety-comparison"]')) input.checked = false;
+      element.hidden = true;
+      break;
+    }
     case 'new-anxiety': openAnxiety(); break;
     case 'backfill-anxiety': openAnxiety(undefined, state.reviewDate); break;
     case 'edit-anxiety': openAnxiety(element.dataset.id); break;
@@ -860,7 +1024,7 @@ async function handleAction(action, element) {
       if (currentView()?.kind === 'anxiety') addCustomAction(currentView());
       break;
     case 'backfill-entry':
-      if (state.data.draft && hasContent(state.data.draft)) toast('已打开上次的草稿，改一下发生日期就能补记。');
+      if (state.data.draft && !state.data.draft.kind && hasContent(state.data.draft)) toast('已打开上次的草稿，改一下发生日期就能补记。');
       openEditor(undefined, state.reviewDate);
       break;
     case 'edit-entry': openEditor(element.dataset.id); break;
@@ -909,6 +1073,10 @@ async function handleAction(action, element) {
   }
 }
 
+app.addEventListener('toggle', event => {
+  if (event.target.matches('details.todo-done') && event.target.isConnected && currentView()?.kind === 'todos') currentView().showDone = event.target.open;
+}, true);
+
 document.addEventListener('click', (event) => {
   const target = event.target.closest('button[data-action],button[data-tab]');
   if (!target || target.disabled) return;
@@ -932,6 +1100,8 @@ app.addEventListener('input', (event) => {
     if (target.id === 'anxiety-worry') view.draft.worry = target.value;
     if (target.id === 'anxiety-outcome') view.draft.outcome = target.value;
     if (target.id === 'anxiety-custom') view.custom = target.value;
+  } else if (view?.kind === 'todo' && target.id === 'todo-text') {
+    view.text = target.value;
   } else if (view?.kind === 'editor') {
     if (target.id === 'entry-text') { view.draft.text = target.value; view.version++; scheduleDraft(view); }
     if (target.id === 'occurred-at') {
@@ -950,6 +1120,11 @@ app.addEventListener('change', (event) => {
   const target = event.target;
   const view = currentView();
   if (view?.kind === 'anxiety') {
+    if (target.id === 'anxiety-reminder') view.draft.remindOn = target.checked ? tomorrow() : null;
+    if (target.name === 'anxiety-comparison') {
+      view.draft.comparison = target.value;
+      app.querySelector('[data-action="clear-comparison"]').hidden = false;
+    }
     if (target.name === 'anxiety-intensity') view.draft.intensity = Number(target.value);
     if (target.name === 'anxiety-action') {
       const actions = Array.from(app.querySelectorAll('input[name="anxiety-action"]:checked'), input => input.value);
@@ -970,6 +1145,7 @@ app.addEventListener('submit', (event) => {
   event.preventDefault();
   if (event.target.id === 'entry-form') void saveEditor();
   if (event.target.id === 'anxiety-form') void saveAnxietyView();
+  if (event.target.id === 'todo-form') void saveTodoView();
   if (event.target.id === 'countdown-form') void saveCountdownView();
 });
 
@@ -1061,6 +1237,7 @@ window.addEventListener('popstate', (event) => {
 
 window.addEventListener('beforeunload', (event) => {
   const view = currentView();
+  if (view?.kind === 'todo' && view.text !== (view.original?.text ?? '')) { event.preventDefault(); event.returnValue = ''; return; }
   if (view?.kind === 'anxiety' && anxietyChanged(view)) { event.preventDefault(); event.returnValue = ''; return; }
   const editor = activeEditor();
   if (!editor || editor.completed) return;
@@ -1075,18 +1252,20 @@ function backgroundSave() {
   void persistDraft(editor).catch(() => {});
 }
 
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') backgroundSave(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') backgroundSave(); else refreshDay(); });
+window.addEventListener('pageshow', refreshDay);
 window.addEventListener('pagehide', backgroundSave);
 window.addEventListener('diaryofflinechange', () => {
   const indicator = app.querySelector('[data-offline-indicator]');
   if (indicator) indicator.textContent = window.diaryOfflineReady ? '离线已就绪' : '正在准备离线';
 });
-setInterval(() => {
+function refreshDay() {
   const nextDay = dayKey();
   if (today === nextDay) return;
   today = nextDay;
   if (!currentView() && !state.busy && !state.loading && !state.error) render();
-}, 30000);
+}
+setInterval(refreshDay, 30000);
 
 async function initialize() {
   state.loading = true;

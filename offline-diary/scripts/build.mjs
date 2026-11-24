@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { extname } from 'node:path';
+import { retainDailyFields } from '../dist/merge.js';
 
 const root = new URL('../', import.meta.url);
 const dist = new URL('dist/', root);
@@ -27,7 +28,10 @@ for (const prefix of ['', 'assets/']) {
 
 const api = await readFile(new URL('worker/api.mjs', root), 'utf8');
 const routes = await readFile(new URL('worker/routes.mjs', root), 'utf8');
-const worker = api + '\nconst publicAssets = ' + JSON.stringify(assets) + ';\n' + routes;
+// The deployable Worker is a single ES module. Embed the same compatibility
+// function used by browser storage so both sides preserve exactly the same fields.
+const bundledApi = api.replace("import { retainDailyFields } from '../dist/merge.js';", () => retainDailyFields.toString());
+const worker = bundledApi + '\nconst publicAssets = ' + JSON.stringify(assets) + ';\n' + routes;
 await mkdir(new URL('server/', dist), { recursive: true });
 await writeFile(new URL('server/index.js', dist), worker);
 console.log('Built the diary Worker with ' + Object.keys(assets).length + ' public assets.');
