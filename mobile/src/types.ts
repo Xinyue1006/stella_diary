@@ -25,9 +25,21 @@ export interface Countdown {
   date: string;
 }
 
+export interface AnxietyLog {
+  id: string;
+  occurredAt: string;
+  updatedAt: string;
+  intensity: 1 | 2 | 3;
+  worry: string;
+  outcome: string;
+  actions: string[];
+  helpfulActions: string[];
+}
+
 export interface DiaryData {
   schemaVersion: 1;
   entries: Entry[];
+  anxietyLogs: AnxietyLog[];
   countdowns: Countdown[];
   mascot: MascotId;
   draft: EntryDraft | null;

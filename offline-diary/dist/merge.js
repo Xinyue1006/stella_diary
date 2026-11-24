@@ -1,5 +1,5 @@
 export function emptyDiary() {
-  return { schemaVersion: 1, entries: [], countdowns: [], mascot: 'dinosaur', draft: null };
+  return { schemaVersion: 1, entries: [], countdowns: [], anxietyLogs: [], mascot: 'dinosaur', draft: null };
 }
 
 export function same(left, right) {
@@ -77,6 +77,7 @@ export function preserveDraft(diary, draft) {
 export function mergeDiary(base, local, remote) {
   const entries = mergeRecords(base.entries, local.entries, remote.entries, 'entry');
   const countdowns = mergeRecords(base.countdowns, local.countdowns, remote.countdowns, 'countdown');
+  const anxietyLogs = mergeRecords(base.anxietyLogs ?? [], local.anxietyLogs ?? [], remote.anxietyLogs ?? [], 'anxiety');
   let draft;
   if (same(local.draft, remote.draft) || same(remote.draft, base.draft)) draft = local.draft;
   else if (same(local.draft, base.draft)) draft = remote.draft;
@@ -88,6 +89,7 @@ export function mergeDiary(base, local, remote) {
     schemaVersion: 1,
     entries: [...entries.values()],
     countdowns: [...countdowns.values()],
+    anxietyLogs: [...anxietyLogs.values()],
     mascot: local.mascot === base.mascot ? remote.mascot : local.mascot,
     draft
   };

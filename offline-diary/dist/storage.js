@@ -103,6 +103,25 @@ function dayKind(kind) {
   throw new Error('无法识别这个日子的类型');
 }
 
+function validateActions(value) {
+  const actions = list(value, 32, '应对方式').map(action => text(action, 120, '应对方式'));
+  if (actions.some(action => action !== action.trim()) || new Set(actions).size !== actions.length) throw new Error('应对方式含有空格或重复项目');
+  return actions;
+}
+
+function validateAnxietyLog(value) {
+  const log = record(value, '焦虑记录');
+  if (![1, 2, 3].includes(log.intensity)) throw new Error('请选择焦虑程度');
+  const actions = validateActions(log.actions);
+  const helpfulActions = validateActions(log.helpfulActions);
+  if (helpfulActions.some(action => !actions.includes(action))) throw new Error('请先选中用过的应对方式');
+  return {
+    id: identifier(log.id), occurredAt: timestamp(log.occurredAt), updatedAt: timestamp(log.updatedAt),
+    intensity: log.intensity, worry: text(log.worry, MAX_TEXT_LENGTH, '担心的事', true),
+    outcome: text(log.outcome, MAX_TEXT_LENGTH, '后来发生的事', true), actions, helpfulActions
+  };
+}
+
 function validateDiary(value) {
   const diary = record(value, '日记');
   if (diary.schemaVersion !== 1) throw new Error('无法识别这个版本的日记资料，原档已保留。');
@@ -119,8 +138,9 @@ function validateDiary(value) {
     if (!title.trim()) throw new Error('倒数日名称不能为空');
     return { id: identifier(countdown.id), title, date: dateKey(countdown.date), ...dayKind(countdown.kind) };
   });
-  if (new Set(entries.map(entry => entry.id)).size !== entries.length || new Set(countdowns.map(countdown => countdown.id)).size !== countdowns.length) throw new Error('资料含有重复记录编号');
-  return { schemaVersion: 1, entries, countdowns, mascot: diary.mascot, draft: diary.draft === null ? null : validateDraft(diary.draft) };
+  const anxietyLogs = list(diary.anxietyLogs === undefined ? [] : diary.anxietyLogs, 20000, '焦虑记录').map(validateAnxietyLog);
+  if ([entries, countdowns, anxietyLogs].some(rows => new Set(rows.map(row => row.id)).size !== rows.length)) throw new Error('资料含有重复记录编号');
+  return { schemaVersion: 1, entries, countdowns, anxietyLogs, mascot: diary.mascot, draft: diary.draft === null ? null : validateDraft(diary.draft) };
 }
 
 function mapPhotos(diary, map) {
@@ -156,14 +176,33 @@ function onSuccess(request, action, fail) {
   request.onsuccess = () => { try { action(request.result); } catch (error) { fail(error); } };
 }
 
+function storedDiary(value, base) {
+  if (value === undefined) return emptyDiary();
+  // A still-open old shell can rewrite local state without this collection.
+  // Its omission carries no deletion intent, so retain known synced records.
+  if (value.anxietyLogs === undefined && base?.diary.anxietyLogs) {
+    return localDiary({ ...value, anxietyLogs: base.diary.anxietyLogs });
+  }
+  return localDiary(value);
+}
+
+function readStoredDiary(state, action, fail) {
+  onSuccess(state.get('diary'), value => {
+    if (value && value.anxietyLogs === undefined) {
+      onSuccess(state.get(checkpointKey), base => action(storedDiary(value, base)), fail);
+    } else {
+      action(storedDiary(value));
+    }
+  }, fail);
+}
+
 /** Read/modify/write happens within ONE transaction, including across open tabs. */
 async function mutate(transform) {
   const db = await openDatabase();
   return transact(db, ['state', 'photos'], 'readwrite', (transaction, done, fail) => {
     const state = transaction.objectStore('state');
     const photos = transaction.objectStore('photos');
-    onSuccess(state.get('diary'), value => {
-      const current = value === undefined ? emptyDiary() : localDiary(value);
+    readStoredDiary(state, current => {
       const next = localDiary(transform(current));
       // Requests are queued synchronously while the transaction is active.
       for (const photo of allPhotos(next)) {
@@ -181,7 +220,7 @@ async function mutate(transform) {
 export async function loadDiary() {
   const db = await openDatabase();
   return transact(db, ['state'], 'readonly', (transaction, done, fail) => {
-    onSuccess(transaction.objectStore('state').get('diary'), value => done(value === undefined ? emptyDiary() : localDiary(value)), fail);
+    readStoredDiary(transaction.objectStore('state'), done, fail);
   });
 }
 
@@ -211,11 +250,19 @@ export async function readSyncState(owner) {
   return transact(db, ['state'], owner ? 'readwrite' : 'readonly', (transaction, done, fail) => {
     const state = transaction.objectStore('state');
     readStateKeys(state, ['diary', checkpointKey, intentKey], (value, base, intent) => {
-      const local = value === undefined ? emptyDiary() : localDiary(value);
+      const local = storedDiary(value, base);
       if (owner && base && owner !== base.owner) throw new Error('请登录之前同步这本日记的 ChatGPT 账号。本机资料已保留。');
       if (owner && !base) {
         base = newCheckpoint(owner);
         state.put(base, checkpointKey);
+      }
+      // Older clients may know the current ETag while omitting logs stored at
+      // that very version. Fetch its full body once before trusting a 304.
+      if (base && base.diary.anxietyLogs === undefined) {
+        base = { ...base, diary: localDiary(base.diary), needsFullSnapshot: true };
+      }
+      if (intent && intent.target.anxietyLogs === undefined) {
+        intent = { before: storedDiary(intent.before, base), target: localDiary(intent.target), predatesAnxietyLogs: true };
       }
       done({ local, base, intent });
     }, fail);
@@ -242,9 +289,9 @@ export async function applySyncedDiary(snapshot, target, version) {
     const state = transaction.objectStore('state');
     readStateKeys(state, ['diary', checkpointKey], (value, base) => {
       if (base?.stamp !== snapshot.base.stamp) { done(null); return; }
-      const current = value === undefined ? emptyDiary() : localDiary(value);
+      const current = storedDiary(value, base);
       const next = same(current, snapshot.local) ? target : localDiary(mergeDiary(snapshot.local, current, target));
-      if (!same(current, next)) {
+      if (!same(current, next) || (value && value.anxietyLogs === undefined)) {
         state.put(current, 'previous');
         state.put(next, 'diary');
       }
@@ -328,6 +375,31 @@ export async function removeCountdown(id, expectedItem) {
   return mutate(diary => {
     if (expectedItem && !same(diary.countdowns.find(item => item.id === id), expectedItem)) throw new Error('这个日子有新的改动，请重新查看后再删除。');
     return { ...diary, countdowns: diary.countdowns.filter(item => item.id !== id) };
+  });
+}
+
+export async function saveAnxietyLog(input, id, expectedLog) {
+  record(input, '焦虑记录');
+  if (id !== undefined) identifier(id);
+  return mutate(diary => {
+    const current = id === undefined ? undefined : diary.anxietyLogs.find(log => log.id === id);
+    if (id !== undefined && !current && !expectedLog) throw new Error('这条焦虑记录已不存在');
+    const replace = current && (!expectedLog || same(current, expectedLog));
+    const now = new Date().toISOString();
+    const log = validateAnxietyLog({
+      occurredAt: now, worry: '', outcome: '', actions: [], helpfulActions: [],
+      ...(expectedLog ?? current), ...input, id: replace ? id : makeId('anxiety'), updatedAt: now
+    });
+    const anxietyLogs = replace ? diary.anxietyLogs.map(item => item.id === id ? log : item) : [...diary.anxietyLogs, log];
+    return { ...diary, anxietyLogs };
+  });
+}
+
+export async function removeAnxietyLog(id, expectedLog) {
+  identifier(id);
+  return mutate(diary => {
+    if (expectedLog && !same(diary.anxietyLogs.find(item => item.id === id), expectedLog)) throw new Error('这条焦虑记录有新的改动，请重新查看后再删除。');
+    return { ...diary, anxietyLogs: diary.anxietyLogs.filter(item => item.id !== id) };
   });
 }
 
@@ -448,8 +520,7 @@ export async function importBackup(file) {
 export async function exportBackup() {
   const db = await openDatabase();
   const snapshot = await transact(db, ['state', 'photos'], 'readonly', (transaction, done, fail) => {
-    onSuccess(transaction.objectStore('state').get('diary'), value => {
-      const diary = value === undefined ? emptyDiary() : localDiary(value);
+    readStoredDiary(transaction.objectStore('state'), diary => {
       const references = allPhotos(diary);
       const photos = [];
       let total = 0;

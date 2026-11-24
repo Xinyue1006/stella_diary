@@ -1,4 +1,4 @@
-import type { Countdown, DiaryBackup, DiaryData, Entry, EntryDraft, MascotId, Photo } from './types';
+import type { AnxietyLog, Countdown, DiaryBackup, DiaryData, Entry, EntryDraft, MascotId, Photo } from './types';
 
 export const MASCOTS: readonly MascotId[] = ['dinosaur', 'ladybug', 'butterfly', 'cow', 'bee', 'bunny'];
 // A self-contained backup is deliberately bounded so it can be restored on a phone.
@@ -7,6 +7,9 @@ export const MAX_PHOTO_BYTES = 6 * 1024 * 1024;
 export const MAX_TOTAL_PHOTO_BYTES = 24 * 1024 * 1024;
 export const MAX_ENTRY_PHOTOS = 12;
 export const MAX_TEXT_LENGTH = 50000;
+export const MAX_ACTION_COUNT = 32;
+export const MAX_ACTION_LENGTH = 120;
+export const INTENSITY_LABELS = { 1: '有一点', 2: '有点难受', 3: '很难受' } as const;
 
 export function utf8ByteLength(value: string): number {
   let bytes = 0;
@@ -23,7 +26,7 @@ export function utf8ByteLength(value: string): number {
 }
 
 export function emptyDiary(): DiaryData {
-  return { schemaVersion: 1, entries: [], countdowns: [], mascot: 'dinosaur', draft: null };
+  return { schemaVersion: 1, entries: [], anxietyLogs: [], countdowns: [], mascot: 'dinosaur', draft: null };
 }
 
 export function makeId(prefix = 'item'): string {
@@ -99,6 +102,37 @@ export function validateDraft(value: unknown): EntryDraft {
   return draft(value);
 }
 
+function actionList(value: unknown): string[] {
+  const names = list(value, MAX_ACTION_COUNT, '应对方法').map(item => boundedString(item, MAX_ACTION_LENGTH, '方法名称'));
+  if (names.some(name => !name.trim()) || new Set(names).size !== names.length) throw new Error('方法名称为空或重复');
+  return names;
+}
+
+function anxietyLog(value: unknown): AnxietyLog {
+  const row = record(value, '焦虑记录');
+  const { intensity } = row;
+  if (intensity !== 1 && intensity !== 2 && intensity !== 3) throw new Error('焦虑程度无效');
+  const actions = actionList(row.actions);
+  const helpfulActions = actionList(row.helpfulActions);
+  if (helpfulActions.some(name => !actions.includes(name))) throw new Error('有效的方法需要先记入尝试过的方法');
+  return { id: identifier(row.id), occurredAt: timestamp(row.occurredAt), updatedAt: timestamp(row.updatedAt), intensity,
+    worry: boundedString(row.worry, MAX_TEXT_LENGTH, '担心的事', true),
+    outcome: boundedString(row.outcome, MAX_TEXT_LENGTH, '后来发生的事', true), actions, helpfulActions };
+}
+
+export function recentHelpfulActions(logs: readonly AnxietyLog[], excludeId?: string): string[] {
+  const recent = logs.filter(log => log.id !== excludeId && log.helpfulActions.length)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return [...new Set(recent.flatMap(log => log.helpfulActions))].slice(0, 3);
+}
+
+export function anxietyLogsForReview(logs: readonly AnxietyLog[], day: string, query = ''): AnxietyLog[] {
+  const term = query.trim().toLocaleLowerCase();
+  if (!term) return logs.filter(log => localDateKey(log.occurredAt) === day).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+  return logs.filter(log => ['焦虑', INTENSITY_LABELS[log.intensity], log.worry, log.outcome, ...log.actions]
+    .some(text => text.toLocaleLowerCase().includes(term))).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+}
+
 export function validateDiaryData(value: unknown): DiaryData {
   const data = record(value, '日记');
   if (data.schemaVersion !== 1) throw new Error('无法识别这个版本的日记资料');
@@ -117,10 +151,12 @@ export function validateDiaryData(value: unknown): DiaryData {
     const date = { id: identifier(item.id), title, date: item.date };
     return item.kind === 'anniversary' ? { ...date, kind: 'anniversary' } : date;
   });
-  if (new Set(entries.map(item => item.id)).size !== entries.length || new Set(countdowns.map(item => item.id)).size !== countdowns.length) {
+  const anxietyLogs = list(data.anxietyLogs === undefined ? [] : data.anxietyLogs, 20000, '焦虑记录').map(anxietyLog);
+  if (new Set(entries.map(item => item.id)).size !== entries.length || new Set(countdowns.map(item => item.id)).size !== countdowns.length
+    || new Set(anxietyLogs.map(item => item.id)).size !== anxietyLogs.length) {
     throw new Error('资料含有重复记录编号');
   }
-  return { schemaVersion: 1, entries, countdowns, mascot: data.mascot as MascotId, draft: data.draft === null ? null : draft(data.draft) };
+  return { schemaVersion: 1, entries, anxietyLogs, countdowns, mascot: data.mascot as MascotId, draft: data.draft === null ? null : draft(data.draft) };
 }
 
 export function allPhotos(data: DiaryData): Photo[] {

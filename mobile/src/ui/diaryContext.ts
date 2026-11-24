@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { Entry } from '../types';
+import type { AnxietyLog, Entry } from '../types';
 import type { useDiary } from '../useDiary';
 
 export type DiaryContextValue = ReturnType<typeof useDiary> & {
@@ -8,6 +8,7 @@ export type DiaryContextValue = ReturnType<typeof useDiary> & {
   reviewQuery: string;
   setReviewQuery: (query: string) => void;
   openWriter: (entry?: Entry, date?: string) => void;
+  openAnxiety: (log?: AnxietyLog) => void;
 };
 
 export const DiaryContext = createContext<DiaryContextValue | null>(null);

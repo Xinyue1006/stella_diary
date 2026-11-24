@@ -49,7 +49,11 @@ const paths = {
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
   upload: '<path d="M12 16V4m-5 5 5-5 5 5M4 16v5h16v-5"/>',
   cloud: '<path d="M6.5 18a4.5 4.5 0 0 1-.5-9 6 6 0 0 1 11.4-1 5 5 0 0 1 .6 10H6.5Z"/>',
+  heart: '<path d="M20.3 5.8a4.8 4.8 0 0 0-6.8 0L12 7.3l-1.5-1.5a4.8 4.8 0 1 0-6.8 6.8l7.6 7.3a1 1 0 0 0 1.4 0l7.6-7.3a4.8 4.8 0 0 0 0-6.8Z"/>',
 };
+
+const intensityLabels = ['有一点', '有点难受', '很难受'];
+const commonActions = ['出去走走', '找人聊聊', '休息一下'];
 
 function icon(name) {
   return `<svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.flower}</svg>`;
@@ -266,6 +270,19 @@ async function requestBack(depth = state.views.length - 1) {
   if (!view) return;
   document.activeElement?.blur();
   if (view.kind === 'photo') { finishBack(depth); return; }
+  if (view.kind === 'anxiety') {
+    if (anxietyChanged(view)) {
+      const choice = await ask('这条焦虑记录还没保存', '想把刚才写下的内容收好吗？', [
+        { value: 'cancel', label: '继续写' },
+        { value: 'discard', label: '放弃并返回', className: 'quiet' },
+        { value: 'save', label: '保存并返回', className: 'primary' },
+      ]);
+      if (choice === 'save') { await saveAnxietyView(depth); return; }
+      if (choice !== 'discard') return;
+    }
+    finishBack(depth);
+    return;
+  }
   if (view.kind === 'countdown') {
     if (view.title !== (view.original?.title ?? '') || view.date !== view.initialDate || view.dayType !== (view.original?.kind ?? 'countdown')) {
       const choice = await ask('这个日子还没保存', '可以继续填写，或保存后返回。', [
@@ -313,6 +330,64 @@ function openEditor(id, date) {
   openView({ kind: 'editor', id: entry?.id, originalEntry: entry, expectedDraft: savedDraft, draftWrite: Promise.resolve(), draft, initial: JSON.stringify(draft), timeInput: localDateTime(draft.occurredAt), version: 0, persistedVersion: 0, completed: false, closing: false });
 }
 
+function openAnxiety(id, date) {
+  const original = id && state.data.anxietyLogs?.find(item => item.id === id);
+  if (id && !original) { toast('这条焦虑记录已移除。'); return; }
+  const draft = {
+    occurredAt: original?.occurredAt ?? newDraft(date).occurredAt,
+    intensity: original?.intensity ?? null,
+    worry: original?.worry ?? '',
+    outcome: original?.outcome ?? '',
+    actions: [...(original?.actions ?? [])],
+    helpfulActions: [...(original?.helpfulActions ?? [])],
+  };
+  openView({ kind: 'anxiety', id, original, draft, initial: JSON.stringify(draft), custom: '', choices: [...new Set([...commonActions, ...draft.actions])] });
+}
+
+function anxietyChanged(view) {
+  return Boolean(view.custom.trim()) || JSON.stringify(view.draft) !== view.initial;
+}
+
+function addCustomAction(view) {
+  const action = view.custom.trim();
+  if (!action) return true;
+  if (!view.draft.actions.includes(action)) {
+    if (view.draft.actions.length >= 32) { toast('每条记录最多可记 32 种做法。', true); return false; }
+    view.draft.actions.push(action);
+  }
+  if (!view.choices.includes(action)) view.choices.push(action);
+  view.custom = '';
+  const field = app.querySelector('#anxiety-custom');
+  if (field) field.value = '';
+  app.querySelector('[data-anxiety-actions]').innerHTML = actionOptions('anxiety-action', view.choices, view.draft.actions);
+  updateHelpfulChoices(view);
+  return true;
+}
+
+async function saveAnxietyView(depth = state.views.length - 1) {
+  const view = currentView();
+  if (view?.kind !== 'anxiety' || !app.querySelector('#anxiety-form')?.reportValidity()) return;
+  if (view.custom.trim() && !addCustomAction(view)) return;
+  const snapshot = copy(view.draft);
+  await runBusy(async () => {
+    await mutate(() => storage.saveAnxietyLog(snapshot, view.id, view.original));
+    view.initial = JSON.stringify(view.draft);
+    toast('这条焦虑记录已收好。');
+    finishBack(depth);
+  });
+}
+
+async function removeAnxiety(id) {
+  const log = state.data.anxietyLogs?.find(item => item.id === id);
+  if (!log) return;
+  const choice = await ask('删除这条焦虑记录？', '这条记录和它的后续将一起移除。', [
+    { value: 'cancel', label: '保留' },
+    { value: 'delete', label: '删除记录', className: 'danger' },
+  ]);
+  if (choice !== 'delete') return;
+  await runBusy(async () => { await mutate(() => storage.removeAnxietyLog(id, log)); render(); toast('这条焦虑记录已移除。'); });
+}
+
 async function saveEditor(depth = state.views.length - 1) {
   const editor = currentView();
   if (editor?.kind !== 'editor') return;
@@ -355,7 +430,7 @@ function renderHeader(view) {
   phoneBack.hidden = !view && !state.tabTrail.length && state.tab === 'today';
   phoneBack.dataset.action = view ? 'back' : 'back-tab';
   phoneBack.lastElementChild.textContent = view?.kind === 'photo' ? '返回日记' : '返回';
-  const formId = view?.kind === 'editor' ? 'entry-form' : view?.kind === 'countdown' ? 'countdown-form' : null;
+  const formId = { editor: 'entry-form', countdown: 'countdown-form', anxiety: 'anxiety-form' }[view?.kind];
   phoneSave.hidden = !formId;
   if (formId) {
     phoneSave.setAttribute('form', formId);
@@ -369,7 +444,7 @@ function renderHeader(view) {
     header.innerHTML = state.tab === 'today' ? '' : `<button type="button" class="back-button" data-action="back-tab">${icon('back')}<span>返回</span></button><span class="header-title" aria-hidden="true"></span><div class="header-actions"></div>`;
     return;
   }
-  const title = view.kind === 'editor' ? view.id ? '修改记录' : '写下一点' : view.kind === 'countdown' ? '一个想记住的日子' : '照片';
+  const title = view.kind === 'editor' ? view.id ? '修改记录' : '写下一点' : view.kind === 'countdown' ? '一个想记住的日子' : view.kind === 'anxiety' ? '焦虑记录' : '照片';
   const back = view.kind === 'photo' ? '返回日记' : '返回';
   header.innerHTML = `<button type="button" class="back-button" data-action="back">${icon('back')}<span>${back}</span></button><h1 class="header-title">${title}</h1><div class="header-actions">${view.kind === 'editor' ? button('保存', 'save-entry', { className: 'quiet', symbol: 'check' }) : ''}</div>`;
 }
@@ -381,6 +456,33 @@ function entryMarkup(entry, showDate = false) {
 function photoStrip(photos, editable = false) {
   if (!photos.length) return '';
   return `<div class="entry-photos">${photos.map((photo, index) => `<div class="photo-item"><button type="button" class="photo-button" data-action="view-photo" data-photo-id="${escape(photo.id)}" aria-label="查看第 ${index + 1} 张照片"><img class="photo-thumb" data-photo-id="${escape(photo.id)}" alt="日记照片 ${index + 1}" loading="lazy"></button>${editable ? `<button type="button" class="photo-remove" data-action="remove-photo" data-photo-id="${escape(photo.id)}" aria-label="移除第 ${index + 1} 张照片">${icon('close')}</button>` : ''}</div>`).join('')}</div>`;
+}
+
+function anxietyMarkup(log, showDate) {
+  const id = escape(log.id);
+  const time = escape(timeLabel(log.occurredAt));
+  const hasFollowup = log.outcome || log.actions.length;
+  return `<article class="entry-card anxiety-card" data-anxiety-card="${id}">
+    <div class="entry-meta"><div class="entry-time">${icon('heart')}<time datetime="${escape(log.occurredAt)}">${showDate ? escape(dateLabel(log.occurredAt, true)) + ' · ' : ''}${time}</time></div>
+      <button type="button" class="icon-button" data-action="delete-anxiety" data-id="${id}" aria-label="删除 ${time} 的焦虑记录">${icon('trash')}</button></div>
+    <h3 class="anxiety-level">焦虑<span>${intensityLabels[log.intensity - 1]}</span></h3>
+    ${log.worry ? `<p class="entry-body">${escape(log.worry)}</p>` : ''}
+    ${log.outcome ? `<div class="anxiety-after"><strong>后来</strong><p class="entry-body">${escape(log.outcome)}</p></div>` : ''}
+    ${log.actions.length ? `<ul class="anxiety-methods" aria-label="当时试过的做法">${log.actions.map(action => `<li>${escape(action)}${log.helpfulActions.includes(action) ? '<span>有帮助</span>' : ''}</li>`).join('')}</ul>` : ''}
+    ${button(hasFollowup ? '修改这条记录' : '后来怎么样了？', 'edit-anxiety', { className: 'quiet anxiety-followup', attributes: `data-id="${id}"`, symbol: 'edit' })}
+  </article>`;
+}
+
+function diaryTimeline(date, query = '') {
+  const rows = [...state.data.entries, ...(state.data.anxietyLogs ?? [])].filter(item => {
+    if (!query) return dayKey(item.occurredAt) === date;
+    const terms = 'intensity' in item
+      ? ['焦虑', intensityLabels[item.intensity - 1], item.worry, item.outcome, ...item.actions, ...(item.helpfulActions.length ? ['有帮助'] : [])]
+      : [item.text];
+    return [...terms, dayKey(item.occurredAt)].some(term => term.toLocaleLowerCase().includes(query));
+  });
+  rows.sort((a, b) => query ? b.occurredAt.localeCompare(a.occurredAt) : a.occurredAt.localeCompare(b.occurredAt));
+  return { count: rows.length, html: rows.map(row => 'intensity' in row ? anxietyMarkup(row, Boolean(query)) : entryMarkup(row, Boolean(query))).join('') };
 }
 
 function countdownMarkup(item, compact = false) {
@@ -399,11 +501,17 @@ function countdownMarkup(item, compact = false) {
 
 function renderToday() {
   const mascot = currentMascot();
-  const entries = state.data.entries.filter((entry) => dayKey(entry.occurredAt) === dayKey()).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+  const timeline = diaryTimeline(dayKey());
   const byDate = [...state.data.countdowns].sort((a, b) => a.date.localeCompare(b.date));
   const nextDay = byDate.find(item => dateDifference(item.date) >= 0) || byDate.reverse().find(item => item.kind === 'anniversary');
   const draft = state.data.draft && hasContent(state.data.draft);
-  return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div><button type="button" class="sync-shortcut" data-action="show-sync" aria-label="查看私人同步状态">${icon('cloud')}<span data-sync-label></span></button></div><section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p>${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}</div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section><div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${entries.length ? `<span class="muted">${entries.length} 条 · 按发生时间</span>` : ''}</div>${entries.length ? entries.map((entry) => entryMarkup(entry)).join('') : emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div><aside class="journal-aside"><div class="section-heading"><h2>期待与纪念</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有即将到来的日子</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
+  return `<section class="page page-stack"><div class="page-heading masthead"><div><p class="eyebrow">${escape(dateLabel(new Date(), true))}</p><h1>小猪向阳日记</h1></div><button type="button" class="sync-shortcut" data-action="show-sync" aria-label="查看私人同步状态">${icon('cloud')}<span data-sync-label></span></button></div>
+    <section class="hero"><div class="hero-copy"><p class="eyebrow">今天的小伙伴</p><h2>${escape(mascot.name)}</h2><p>文字和照片，记在这里。</p><div class="hero-buttons">
+      ${button(draft ? '继续上次的草稿' : '写一条记录', 'new-entry', { className: 'primary', symbol: 'edit' })}
+      ${button('我现在有点焦虑', 'new-anxiety', { className: 'quiet', symbol: 'heart' })}
+    </div></div><div class="hero-art"><img class="hero-mascot hero-pig" src="${escape(mascot.image)}" alt="穿着动物服的${escape(mascot.name)}"></div></section>
+    <div class="journal-layout"><div class="journal-main"><div class="section-heading"><h2>今天的小片段</h2>${timeline.count ? `<span class="muted">${timeline.count} 条 · 按发生时间</span>` : ''}</div>${timeline.html || emptyState('今天还没有记录', '点「写一条记录」开始。\n想起以前的事，可以改发生时间补记。')}</div>
+    <aside class="journal-aside"><div class="section-heading"><h2>期待与纪念</h2>${button('全部', 'show-countdowns', { className: 'quiet' })}</div>${nextDay ? countdownMarkup(nextDay, true) : `<div class="card gentle-card"><h3>还没有即将到来的日子</h3>${button('加一个日子', 'new-countdown', { className: 'secondary', symbol: 'add' })}</div>`}</aside></div></section>`;
 }
 
 function calendarMarkup() {
@@ -411,7 +519,7 @@ function calendarMarkup() {
   const numberOfDays = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
   const padding = (month.getDay() + 6) % 7;
   const counts = new Map();
-  for (const entry of state.data.entries) { const key = dayKey(entry.occurredAt); counts.set(key, (counts.get(key) || 0) + 1); }
+  for (const entry of [...state.data.entries, ...(state.data.anxietyLogs ?? [])]) { const key = dayKey(entry.occurredAt); counts.set(key, (counts.get(key) || 0) + 1); }
   const cells = Array.from({ length: Math.ceil((padding + numberOfDays) / 7) * 7 }, (_, index) => {
     const day = index - padding + 1;
     if (day < 1 || day > numberOfDays) return '<span class="calendar-day calendar-blank" aria-hidden="true"></span>';
@@ -424,8 +532,9 @@ function calendarMarkup() {
 
 function reviewResults() {
   const query = state.query.trim().toLocaleLowerCase();
-  const entries = query ? state.data.entries.filter((entry) => entry.text.toLocaleLowerCase().includes(query)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)) : state.data.entries.filter((entry) => dayKey(entry.occurredAt) === state.reviewDate).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
-  return `<div class="section-heading"><h2>${query ? '找到的小片段' : escape(dateLabel(state.reviewDate, true))}</h2><span class="muted">${entries.length} 条</span></div>${entries.length ? entries.map((entry) => entryMarkup(entry, Boolean(query))).join('') : emptyState(query ? '暂时没有找到' : '这一天还没有记录', query ? '换一个关键词试试看。' : '后来想起来，也可以把它补在这一天。', query ? 'search' : 'calendar')}${query ? '' : button('补写这一天', 'backfill-entry', { className: 'secondary', symbol: 'edit' })}`;
+  const timeline = diaryTimeline(state.reviewDate, query);
+  const empty = () => emptyState(query ? '暂时没有找到' : '这一天还没有记录', query ? '换一个关键词试试看。' : '后来想起来，也可以把它补在这一天。', query ? 'search' : 'calendar');
+  return `<div class="section-heading"><h2>${query ? '找到的小片段' : escape(dateLabel(state.reviewDate, true))}</h2><span class="muted">${timeline.count} 条</span></div>${timeline.html || empty()}${query ? '' : `<div class="button-row">${button('补写这一天', 'backfill-entry', { className: 'secondary', symbol: 'edit' })}${button('补记焦虑', 'backfill-anxiety', { className: 'quiet', symbol: 'heart' })}</div>`}`;
 }
 
 function renderReview() {
@@ -497,13 +606,13 @@ function renderSettings() {
     <div class="page-heading"><div><p class="eyebrow">只属于你的小角落</p><h1>我的</h1></div></div>
     <section class="settings-card" aria-labelledby="sync-heading">
       <div class="section-heading"><h2 id="sync-heading">私人同步</h2><span class="status-pill" data-sync-label></span></div>
-      <p>在电脑和 iPhone 用同一个 ChatGPT 账号打开这本日记。文字、照片、草稿、期待日和小猪都会自动同步。</p>
+      <p>在电脑和 iPhone 用同一个 ChatGPT 账号打开这本日记。日记、照片、草稿、焦虑记录、期待与纪念日和小猪都会自动同步。</p>
       <div class="sync-detail"><p data-sync-message role="status"></p><small class="field-help" data-sync-time hidden></small></div>
       <div class="sync-actions">${button('立即同步', 'sync-now', { className: 'secondary', symbol: 'cloud' })}<a class="button primary" href="/signin-with-chatgpt?return_to=%2F" target="_top" data-sync-signin hidden>登录 ChatGPT</a></div>
     </section>
     <section class="settings-card"><div class="section-heading"><h2>今天让谁陪你？</h2></div><div class="mascot-grid">${mascots.map((mascot) => `<button type="button" class="mascot-card${mascot.id === state.data.mascot ? ' is-selected' : ''}" data-action="select-mascot" data-id="${escape(mascot.id)}" aria-pressed="${mascot.id === state.data.mascot}" style="--mascot-color:${escape(mascot.color)}"><img class="mascot-thumb" src="${escape(mascot.image)}" alt=""><span>${escape(mascot.name)}${mascot.id === state.data.mascot ? icon('check') : ''}</span></button>`).join('')}</div></section>
     <section class="settings-card backup-card"><div class="section-heading"><h2>完整备份</h2></div>
-      <p>想自己留一份副本，可以把文字、照片、草稿、期待日和小猪一起导出到 iCloud Drive。</p>
+      <p>可以把日记、照片、草稿、焦虑记录、期待与纪念日和小猪一起导出到 iCloud Drive。</p>
       <div class="button-row">${button('导出完整备份', 'export-backup', { className: 'primary', symbol: 'download' })}${button('从备份恢复', 'choose-backup', { className: 'secondary', symbol: 'upload' })}</div>
       <input id="backup-file" type="file" accept="application/json,.json" class="sr-only" hidden>
       <p class="field-help">每张照片最多 6 MB。完整备份中的照片合计最多 24 MB，备份文件最多 40 MB。</p>
@@ -531,6 +640,47 @@ function renderCountdownForm(view) {
 
 function renderPhotoViewer(view) {
   return `<section class="page photo-viewer" aria-label="照片预览"><img class="viewer-image" data-photo-id="${escape(view.photo.id)}" alt="日记照片，原图预览"></section>`;
+}
+
+function actionOptions(name, choices, selected) {
+  return choices.map(action => `<label class="anxiety-option"><input type="checkbox" name="${name}" value="${escape(action)}"${selected.includes(action) ? ' checked' : ''}><span>${escape(action)}</span></label>`).join('');
+}
+
+function helpfulChoices(draft) {
+  return draft.actions.length ? `<fieldset class="anxiety-group"><legend>哪些做法对你有帮助？</legend>
+    <div class="anxiety-options">${actionOptions('anxiety-helpful', draft.actions, draft.helpfulActions)}</div></fieldset>` : '';
+}
+
+function updateHelpfulChoices(view) {
+  app.querySelector('[data-anxiety-helpful]').innerHTML = helpfulChoices(view.draft);
+}
+
+function renderAnxietyForm(view) {
+  const { draft, id } = view;
+  const mascot = currentMascot();
+  const historical = dayKey(draft.occurredAt) !== dayKey();
+  const recent = !id && (state.data.anxietyLogs ?? [])
+    .filter(log => log.occurredAt <= draft.occurredAt && log.helpfulActions.length)
+    .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))[0];
+  const intensities = intensityLabels.map((label, index) => `<label class="anxiety-option"><input type="radio" name="anxiety-intensity" value="${index + 1}" required${draft.intensity === index + 1 ? ' checked' : ''}><span>${label}</span></label>`).join('');
+  const worry = `<div class="field"><label for="anxiety-worry">${id ? '当时担心的事' : '心里的担心'} <small>选填</small></label>
+    <textarea class="field-control" id="anxiety-worry" rows="3" maxlength="50000" placeholder="${id ? '那时你担心什么？' : '写一句就好，也可以先空着。'}">${escape(draft.worry)}</textarea></div>`;
+  const followup = id ? `<div class="field"><label for="anxiety-outcome">后来发生了什么？ <small>选填</small></label>
+    <textarea class="field-control" id="anxiety-outcome" rows="3" maxlength="50000" placeholder="事情后来怎么了，你现在有什么感觉？">${escape(draft.outcome)}</textarea></div>
+    <fieldset class="anxiety-group"><legend>当时试过什么？</legend><div class="anxiety-options" data-anxiety-actions>${actionOptions('anxiety-action', view.choices, draft.actions)}</div>
+      <div class="anxiety-custom-row"><label for="anxiety-custom" class="sr-only">其他做法</label><input class="field-control" type="text" id="anxiety-custom" maxlength="120" placeholder="写下其他做法" value="${escape(view.custom)}">
+      ${button('添加', 'add-anxiety-action', { className: 'secondary', symbol: 'add' })}</div></fieldset>
+    <div data-anxiety-helpful>${helpfulChoices(draft)}</div>` : '';
+  return `<section class="page editor-view"><form id="anxiety-form" class="editor-form anxiety-form">
+    <div class="anxiety-prompt"><div class="anxiety-portrait" style="--mascot-color:${escape(mascot.color)}"><img src="${escape(mascot.image)}" alt=""></div>
+      <div><p class="eyebrow">${escape(mascot.name)}陪你记</p><h2>${id ? '后来怎么样了？' : historical ? '当时最担心什么？' : '现在最担心什么？'}</h2>
+      <p class="field-help">${id || historical ? escape(dateLabel(draft.occurredAt, true)) + ' · ' + escape(timeLabel(draft.occurredAt)) : '只选一下感受，也可以保存。'}</p></div></div>
+    ${recent ? `<p class="anxiety-suggestion" data-anxiety-suggestion>你之前记过，「${escape(recent.helpfulActions[0])}」对你有帮助。</p>` : ''}
+    ${followup}
+    <fieldset class="anxiety-group"><legend>${id || historical ? '当时的焦虑有多强？' : '此刻的焦虑有多强？'}</legend><div class="anxiety-options intensity-options">${intensities}</div></fieldset>
+    ${worry}
+    <div class="editor-footer"><button type="submit" class="button primary">${icon('check')}<span>${id ? '保存修改' : '收好这条记录'}</span></button></div>
+  </form></section>`;
 }
 
 function findPhoto(id) {
@@ -579,9 +729,10 @@ function render() {
     app.innerHTML = `<section class="page">${emptyState('暂时没能打开日记', state.error)}${button('重新读取', 'retry-load', { className: 'primary' })}</section>`;
     return;
   }
-  const title = view ? view.kind === 'editor' ? '写日记' : view.kind === 'photo' ? '照片' : '加一个日子' : ({ today: '今天', review: '回看', countdowns: '期待', settings: '我的' })[state.tab];
+  const title = view ? ({ editor: '写日记', photo: '照片', anxiety: '焦虑记录', countdown: '加一个日子' })[view.kind] : ({ today: '今天', review: '回看', countdowns: '期待', settings: '我的' })[state.tab];
   document.title = `${title} · 小猪向阳日记`;
   if (view?.kind === 'editor') app.innerHTML = renderEditor(view);
+  else if (view?.kind === 'anxiety') app.innerHTML = renderAnxietyForm(view);
   else if (view?.kind === 'countdown') app.innerHTML = renderCountdownForm(view);
   else if (view?.kind === 'photo') app.innerHTML = renderPhotoViewer(view);
   else app.innerHTML = ({ today: renderToday, review: renderReview, countdowns: renderCountdowns, settings: renderSettings })[state.tab]();
@@ -701,6 +852,13 @@ async function handleAction(action, element) {
     case 'show-sync': setTab('settings'); break;
     case 'sync-now': requestSync?.(); break;
     case 'new-entry': openEditor(); break;
+    case 'new-anxiety': openAnxiety(); break;
+    case 'backfill-anxiety': openAnxiety(undefined, state.reviewDate); break;
+    case 'edit-anxiety': openAnxiety(element.dataset.id); break;
+    case 'delete-anxiety': await removeAnxiety(element.dataset.id); break;
+    case 'add-anxiety-action':
+      if (currentView()?.kind === 'anxiety') addCustomAction(currentView());
+      break;
     case 'backfill-entry':
       if (state.data.draft && hasContent(state.data.draft)) toast('已打开上次的草稿，改一下发生日期就能补记。');
       openEditor(undefined, state.reviewDate);
@@ -770,7 +928,11 @@ app.addEventListener('input', (event) => {
     return;
   }
   const view = currentView();
-  if (view?.kind === 'editor') {
+  if (view?.kind === 'anxiety') {
+    if (target.id === 'anxiety-worry') view.draft.worry = target.value;
+    if (target.id === 'anxiety-outcome') view.draft.outcome = target.value;
+    if (target.id === 'anxiety-custom') view.custom = target.value;
+  } else if (view?.kind === 'editor') {
     if (target.id === 'entry-text') { view.draft.text = target.value; view.version++; scheduleDraft(view); }
     if (target.id === 'occurred-at') {
       view.timeInput = target.value;
@@ -786,6 +948,20 @@ app.addEventListener('input', (event) => {
 
 app.addEventListener('change', (event) => {
   const target = event.target;
+  const view = currentView();
+  if (view?.kind === 'anxiety') {
+    if (target.name === 'anxiety-intensity') view.draft.intensity = Number(target.value);
+    if (target.name === 'anxiety-action') {
+      const actions = Array.from(app.querySelectorAll('input[name="anxiety-action"]:checked'), input => input.value);
+      if (actions.length > 32) { target.checked = false; toast('每条记录最多可记 32 种做法。', true); return; }
+      view.draft.actions = actions;
+      view.draft.helpfulActions = view.draft.helpfulActions.filter(action => actions.includes(action));
+      updateHelpfulChoices(view);
+    }
+    if (target.name === 'anxiety-helpful') {
+      view.draft.helpfulActions = Array.from(app.querySelectorAll('input[name="anxiety-helpful"]:checked'), input => input.value);
+    }
+  }
   if (target.id === 'entry-photos') { const files = [...target.files]; target.value = ''; void addPhotos(files); }
   if (target.id === 'backup-file') { const file = target.files[0]; target.value = ''; void importDiary(file); }
 });
@@ -793,6 +969,7 @@ app.addEventListener('change', (event) => {
 app.addEventListener('submit', (event) => {
   event.preventDefault();
   if (event.target.id === 'entry-form') void saveEditor();
+  if (event.target.id === 'anxiety-form') void saveAnxietyView();
   if (event.target.id === 'countdown-form') void saveCountdownView();
 });
 
@@ -883,6 +1060,8 @@ window.addEventListener('popstate', (event) => {
 });
 
 window.addEventListener('beforeunload', (event) => {
+  const view = currentView();
+  if (view?.kind === 'anxiety' && anxietyChanged(view)) { event.preventDefault(); event.returnValue = ''; return; }
   const editor = activeEditor();
   if (!editor || editor.completed) return;
   const unsaved = editor.id ? JSON.stringify(editor.draft) !== editor.initial : hasContent(editor.draft) && editor.version > editor.persistedVersion;

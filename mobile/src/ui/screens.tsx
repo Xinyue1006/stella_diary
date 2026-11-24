@@ -2,7 +2,9 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { Alert, Image, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import type { Countdown, Entry } from '../types';
+import { anxietyLogsForReview } from '../domain';
+import type { AnxietyLog, Countdown, Entry } from '../types';
+import { AnxietyCard } from './AnxietyJournal';
 import { ActionButton, EmptyState, Icon, IconButton, PageHeading, Screen, SectionHeading } from './components';
 import { dayKey, daysFromToday, displayDate, displayTime, parseDay } from './dates';
 import { useDiaryContext } from './diaryContext';
@@ -14,8 +16,11 @@ function showError(title: string, error: unknown) {
   Alert.alert(title, error instanceof Error ? error.message : '请稍后再试。');
 }
 
-function sortedEntries(entries: Entry[]): Entry[] {
-  return [...entries].sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime());
+function Timeline({ entries, logs, searching = false }: { entries: Entry[]; logs: AnxietyLog[]; searching?: boolean }) {
+  const rows = [...entries, ...logs].sort((a, b) => searching
+    ? b.occurredAt.localeCompare(a.occurredAt) : a.occurredAt.localeCompare(b.occurredAt));
+  return <>{rows.map(row => 'intensity' in row ? <AnxietyCard key={'anxiety-' + row.id} log={row} showDate={searching} />
+    : <EntryCard key={'entry-' + row.id} entry={row} showDate={searching} />)}</>;
 }
 
 function CountdownCard({ item, compact = false, onManage }: { item: Countdown; compact?: boolean; onManage?: () => void }) {
@@ -55,24 +60,27 @@ function EntryCard({ entry, showDate = false }: { entry: Entry; showDate?: boole
 }
 
 export function TodayScreen() {
-  const { data, openWriter } = useDiaryContext();
+  const { data, openWriter, openAnxiety } = useDiaryContext();
   const router = useRouter();
   const today = dayKey();
-  const entries = sortedEntries(data.entries.filter((entry) => dayKey(entry.occurredAt) === today));
+  const entries = data.entries.filter(entry => dayKey(entry.occurredAt) === today);
+  const logs = anxietyLogsForReview(data.anxietyLogs, today);
+  const total = entries.length + logs.length;
   const mascot = getMascot(data.mascot);
   const nextDay = [...data.countdowns].filter((item) => daysFromToday(item.date) >= 0).sort((a, b) => a.date.localeCompare(b.date))[0];
   return <Screen>
     <PageHeading title="今天" subtitle={displayDate(new Date())} accessory={<View style={styles.flowerBadge}><Icon name="flower" size={25} color="#927116" /></View>} />
     <View style={[styles.hero, { backgroundColor: mascot.color }]}><View style={styles.heroCopy}><Text style={styles.eyebrow}>今天的小伙伴</Text><Text style={styles.heroTitle}>{mascot.name}</Text><Text style={styles.heroDetail}>陪你记下今天的小事。</Text></View><Image source={mascot.image} style={styles.heroPig} resizeMode="contain" accessibilityLabel={`陪伴你的${mascot.name}`} /></View>
     <ActionButton title={data.draft && (data.draft.text.trim() || data.draft.photos.length) ? '继续上次的草稿' : '写一条记录'} icon="pencil-outline" onPress={() => openWriter()} />
+    <ActionButton secondary title="我现在有点焦虑" icon="heart-outline" onPress={() => openAnxiety()} />
     {nextDay ? <Pressable accessibilityRole="button" accessibilityLabel={`查看期待日：${nextDay.title}`} onPress={() => router.navigate('/countdowns')}><CountdownCard item={nextDay} compact /></Pressable> : null}
-    <SectionHeading title="今天的小片段" detail={entries.length ? `${entries.length} 条 · 按发生时间` : undefined} />
-    {entries.length ? entries.map((entry) => <EntryCard key={entry.id} entry={entry} />) : <EmptyState title="今天还留着空白" detail="有想记下来的事，再来写就好。\n以前的事也可以随时补记。" />}
+    <SectionHeading title="今天的小片段" detail={total ? `${total} 条 · 按发生时间` : undefined} />
+    {total ? <Timeline entries={entries} logs={logs} /> : <EmptyState title="今天还留着空白" detail="有想记下来的事，再来写就好。\n以前的事也可以随时补记。" />}
     <Text style={styles.pageFootnote}>你的每一个小片段，都有自己的位置。</Text>
   </Screen>;
 }
 
-function Calendar({ selected, onSelect, entries }: { selected: string; onSelect: (date: string) => void; entries: Entry[] }) {
+function Calendar({ selected, onSelect, entries }: { selected: string; onSelect: (date: string) => void; entries: { occurredAt: string }[] }) {
   const [month, setMonth] = useState(() => new Date(parseDay(selected).getFullYear(), parseDay(selected).getMonth(), 1, 12));
   const counts = useMemo(() => {
     const result: Record<string, number> = {};
@@ -99,16 +107,19 @@ export function ReviewScreen() {
   const { data, reviewDate, setReviewDate, reviewQuery: query, setReviewQuery: setQuery, openWriter } = useDiaryContext();
   const [searchFocused, setSearchFocused] = useState(false);
   const searching = Boolean(query.trim());
-  const entries = searching ? data.entries.filter((entry) => entry.text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)) : sortedEntries(data.entries.filter((entry) => dayKey(entry.occurredAt) === reviewDate));
+  const entries = data.entries.filter(entry => searching ? entry.text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) : dayKey(entry.occurredAt) === reviewDate);
+  const logs = anxietyLogsForReview(data.anxietyLogs, reviewDate, query);
+  const total = entries.length + logs.length;
+  const calendarEntries = useMemo(() => [...data.entries, ...data.anxietyLogs], [data.entries, data.anxietyLogs]);
   return <Screen title="回看">
     <View style={styles.searchBox}>
       <Icon name="search-outline" size={21} />
       <TextInput accessibilityLabel="搜索日记关键词" placeholder="找一段话，或一件小事" placeholderTextColor="#92978A" value={query} onChangeText={setQuery} onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)} style={styles.searchInput} returnKeyType="search" />
       {searchFocused || query.length > 0 ? <Pressable accessibilityRole="button" accessibilityLabel="取消搜索，返回日历" onPress={() => { setQuery(''); Keyboard.dismiss(); }} style={styles.cancelSearch}><Text style={styles.link}>取消</Text></Pressable> : null}
     </View>
-    {!searching ? <Calendar key={reviewDate.slice(0, 7)} selected={reviewDate} onSelect={setReviewDate} entries={data.entries} /> : null}
-    <SectionHeading title={searching ? '找到的小片段' : displayDate(parseDay(reviewDate))} detail={`${entries.length} 条`} />
-    {entries.length ? entries.map((entry) => <EntryCard key={entry.id} entry={entry} showDate={searching} />) : <EmptyState title={searching ? '暂时没有找到' : '这一天还没有记录'} detail={searching ? '换一个关键词试试。' : '后来想起来，也可以把它补在这一天。'} icon={searching ? 'search-outline' : 'calendar-outline'} />}
+    {!searching ? <Calendar key={reviewDate.slice(0, 7)} selected={reviewDate} onSelect={setReviewDate} entries={calendarEntries} /> : null}
+    <SectionHeading title={searching ? '找到的小片段' : displayDate(parseDay(reviewDate))} detail={`${total} 条`} />
+    {total ? <Timeline entries={entries} logs={logs} searching={searching} /> : <EmptyState title={searching ? '暂时没有找到' : '这一天还没有记录'} detail={searching ? '换一个关键词试试。' : '后来想起来，也可以把它补在这一天。'} icon={searching ? 'search-outline' : 'calendar-outline'} />}
     {!searching ? <ActionButton secondary title="补写这一天" icon="pencil-outline" onPress={() => {
       if (data.draft && (data.draft.text.trim() || data.draft.photos.length)) Alert.alert('有一份还没写完的草稿', '先打开草稿，改一下发生日期就可以补写这一天。', [{ text: '稍后', style: 'cancel' }, { text: '打开草稿', onPress: () => openWriter(undefined, reviewDate) }]);
       else openWriter(undefined, reviewDate);

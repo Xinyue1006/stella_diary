@@ -36,7 +36,7 @@ async function cloudState(base) {
   const headers = { Accept: 'application/json' };
   if (base) {
     headers['X-Diary-Owner'] = base.owner;
-    if (base.version) headers['If-None-Match'] = `"${base.version}"`;
+    if (base.version && !base.needsFullSnapshot) headers['If-None-Match'] = `"${base.version}"`;
   }
   const data = await api('/api/sync', { headers });
   if (data === notModified && base?.version) return base;
@@ -110,11 +110,12 @@ async function syncOnce(onWork) {
 
   // A response can be lost after a successful upload. Finish its local commit
   // using the saved pre-upload state, including edits made since that upload.
-  if (intent && cloud.diary && same(intent.target, remote)) {
+  const intended = intent?.predatesAnxietyLogs ? { ...intent.target, anxietyLogs: remote.anxietyLogs } : intent?.target;
+  if (intent && cloud.diary && same(intended, remote)) {
     onWork();
     return applySyncedDiary({ ...snapshot, local: intent.before }, remote, cloud.version);
   }
-  if (!intent && cloud.version === base.version && same(local, base.diary)) {
+  if (!intent && !base.needsFullSnapshot && cloud.version === base.version && same(local, base.diary)) {
     return { diary: local, pending: false, unchanged: true };
   }
   onWork();
@@ -125,7 +126,9 @@ async function syncOnce(onWork) {
   if (!same(merged, remote)) {
     if (!await rememberUpload(snapshot, merged)) throw new RetrySync();
     const result = await api('/api/sync', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Diary-Owner': cloud.owner, 'X-Diary-Day-Kinds': '1' },
+      method: 'PUT', headers: {
+        'Content-Type': 'application/json', 'X-Diary-Owner': cloud.owner, 'X-Diary-Day-Kinds': '1', 'X-Diary-Anxiety-Logs': '1'
+      },
       body: JSON.stringify({ version, diary: merged })
     });
     if (typeof result.version !== 'string' || !result.version) throw new Error('未能确认同步结果，请稍后重试。');

@@ -4,7 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { allPhotos, emptyDiary, isDateKey, makeId, mapDiaryPhotos, MAX_BACKUP_BYTES, MAX_PHOTO_BYTES, MAX_TOTAL_PHOTO_BYTES, parseBackup, utf8ByteLength, validateDiaryData, validateDraft } from './domain';
-import type { Countdown, DiaryBackup, DiaryData, EntryDraft, MascotId, Photo } from './types';
+import type { AnxietyLog, Countdown, DiaryBackup, DiaryData, EntryDraft, MascotId, Photo } from './types';
 
 const STORAGE_KEY = 'sunflower-diary.v1';
 const PREVIOUS_KEY = 'sunflower-diary.previous.v1';
@@ -135,6 +135,19 @@ export function useDiary() {
     await commit({ ...dataRef.current, entries: dataRef.current.entries.filter(item => item.id !== id) });
   }), [commit]);
 
+  const saveAnxiety = useCallback((input: Omit<AnxietyLog, 'id' | 'updatedAt'>, id?: string) => serial(async () => {
+    assertLoaded();
+    const current = dataRef.current;
+    if (id && !current.anxietyLogs.some(log => log.id === id)) throw new Error('这条记录已不存在，请重新打开');
+    const row = { ...input, id: id ?? makeId('anxiety'), updatedAt: new Date().toISOString() };
+    const anxietyLogs = id ? current.anxietyLogs.map(log => log.id === id ? row : log) : [...current.anxietyLogs, row];
+    await commit({ ...current, anxietyLogs });
+  }), [assertLoaded, commit]);
+
+  const deleteAnxiety = useCallback((id: string) => serial(async () => {
+    await commit({ ...dataRef.current, anxietyLogs: dataRef.current.anxietyLogs.filter(log => log.id !== id) });
+  }), [commit]);
+
   const saveCountdown = useCallback((input: Omit<Countdown, 'id'>, id?: string) => serial(async () => {
     assertLoaded();
     const title = input.title.trim();
@@ -216,5 +229,5 @@ export function useDiary() {
     });
   }, [assertLoaded, commit]);
 
-  return { data, ready, error, recoveryAvailable, restorePrevious, saveEntry, deleteEntry, saveCountdown, deleteCountdown, selectMascot, saveDraft, exportBackup, importBackup, retryLoad };
+  return { data, ready, error, recoveryAvailable, restorePrevious, saveEntry, deleteEntry, saveAnxiety, deleteAnxiety, saveCountdown, deleteCountdown, selectMascot, saveDraft, exportBackup, importBackup, retryLoad };
 }

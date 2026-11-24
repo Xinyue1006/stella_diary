@@ -1,12 +1,13 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState, type PropsWithChildren } from 'react';
 import { ActivityIndicator, Alert, AppState, StyleSheet, Text, View } from 'react-native';
-import type { Entry } from '../types';
+import type { AnxietyLog, Entry } from '../types';
 import { useDiary } from '../useDiary';
 import { ActionButton } from './components';
 import { dayKey } from './dates';
 import { DiaryContext } from './diaryContext';
 import { EntryEditor } from './EntryEditor';
+import { AnxietyEditor } from './AnxietyJournal';
 import { colors } from './theme';
 
 export function DiaryProvider({ children }: PropsWithChildren) {
@@ -15,6 +16,7 @@ export function DiaryProvider({ children }: PropsWithChildren) {
   const [reviewDate, setReviewDate] = useState(dayKey());
   const [reviewQuery, setReviewQuery] = useState('');
   const [editor, setEditor] = useState<{ entry?: Entry; date?: string; key: number } | null>(null);
+  const [anxiety, setAnxiety] = useState<{ log?: AnxietyLog } | null>(null);
   const [, refreshDate] = useState(dayKey());
 
   useEffect(() => {
@@ -32,8 +34,9 @@ export function DiaryProvider({ children }: PropsWithChildren) {
   }
 
   return (
-    <DiaryContext.Provider value={{ ...diary, reviewDate, setReviewDate, reviewQuery, setReviewQuery, openWriter: (entry, date) => setEditor({ entry, date, key: Date.now() }) }}>
+    <DiaryContext.Provider value={{ ...diary, reviewDate, setReviewDate, reviewQuery, setReviewQuery, openWriter: (entry, date) => setEditor({ entry, date, key: Date.now() }), openAnxiety: log => setAnxiety({ log }) }}>
       {children}
+      {anxiety && <AnxietyEditor log={anxiety.log} onClose={() => setAnxiety(null)} />}
       {editor ? <EntryEditor key={editor.key} entry={editor.entry} date={editor.date} onClose={() => setEditor(null)} onSaved={(occurredAt) => {
         setEditor(null);
         const recordedDay = dayKey(occurredAt);

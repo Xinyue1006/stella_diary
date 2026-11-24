@@ -18,6 +18,8 @@ On your computer, open the same diary URL and sign in with the same account. Lea
 - Use the **Dates** tab for countdowns and anniversaries. Give a day a name and date to remember an event or see how long until it happens.
 - Choose a companion under **Profile**.
 
+From **Today**, start an anxiety check-in by choosing how intense the feeling is. You can save just that choice or add what is on your mind. Reopen the check-in in **Today** or **Review** to record what happened afterward and which actions helped. Your pig can recall a method you previously marked as helpful.
+
 | Companion | Costume |
 | --- | --- |
 | Han Pipi (憨批批) | Green dinosaur |
@@ -29,7 +31,7 @@ On your computer, open the same diary URL and sign in with the same account. Lea
 
 ## Sync and backups
 
-The web app saves entries and photos in IndexedDB on each device. While the diary is open and online, it syncs entries, photos, drafts, dates, and the selected pig to private cloud storage. Access to the cloud copy is controlled by the owner's ChatGPT sign-in. The service can read the stored data. If two devices change the same entry before reconnecting, the diary keeps both versions.
+The web app saves your diary in IndexedDB on each device. While the diary is open and online, it syncs entries, photos, drafts, dates, anxiety check-ins and the selected pig to private cloud storage. Access to the cloud copy is controlled by the owner's ChatGPT sign-in. The service can read the stored data. If two devices change the same entry before reconnecting, the diary keeps both versions.
 
 For a manual copy, use **Profile → Export Full Backup**. On iPhone, choose **Save to Files**, select a folder in iCloud Drive, and tap **Save**. A backup contains your writing and photos in a readable JSON file. The maximum backup size is 40 MiB, including up to 24 MiB of photo data.
 

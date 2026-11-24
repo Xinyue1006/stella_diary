@@ -71,6 +71,12 @@ function validId(value) {
   return typeof value === 'string' && identifier.test(value);
 }
 
+function validActions(actions) {
+  return Array.isArray(actions) && actions.length <= 32 &&
+    actions.every(action => typeof action === 'string' && action.length > 0 && action.length <= 120 && action.trim() === action) &&
+    new Set(actions).size === actions.length;
+}
+
 function validateSnapshot(diary) {
   valid(diary?.schemaVersion === 1 && mascots.includes(diary.mascot));
   valid(Array.isArray(diary.entries) && diary.entries.length <= 20000);
@@ -101,6 +107,17 @@ function validateSnapshot(diary) {
     valid(typeof item.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.date));
     valid(item.date >= '1900-01-01' && item.date <= '2200-12-31' && validTimestamp(item.date + 'T00:00:00.000Z'));
     countdowns.add(item.id);
+  }
+  if (diary.anxietyLogs !== undefined) {
+    valid(Array.isArray(diary.anxietyLogs) && diary.anxietyLogs.length <= 20000);
+    const ids = new Set();
+    for (const log of diary.anxietyLogs) {
+      valid(validId(log?.id) && !ids.has(log.id) && validTimestamp(log.occurredAt) && validTimestamp(log.updatedAt));
+      valid([1, 2, 3].includes(log.intensity) && typeof log.worry === 'string' && log.worry.length <= 50000 &&
+        typeof log.outcome === 'string' && log.outcome.length <= 50000);
+      valid(validActions(log.actions) && validActions(log.helpfulActions) && log.helpfulActions.every(action => log.actions.includes(action)));
+      ids.add(log.id);
+    }
   }
   return photoIds;
 }
@@ -168,15 +185,22 @@ async function snapshot(request, bucket, prefix, owner) {
   catch { throw new DiaryRequestError(400, '日记 JSON 格式无效'); }
   valid(payload && (payload.version === null || (typeof payload.version === 'string' && /^[a-f0-9]{32}$/.test(payload.version))));
   const photoIds = validateSnapshot(payload.diary);
-  // Older installed shells drop the kind when they send a full snapshot.
-  // Preserve it for existing IDs, while allowing deletes and edits from those devices.
-  if (payload.version && request.headers.get('X-Diary-Day-Kinds') !== '1' && payload.diary.countdowns.length) {
+  // A legacy client only controls fields it understands. Read and write
+  // against its exact version so concurrent edits can still trigger a retry.
+  const preserveDayKinds = request.headers.get('X-Diary-Day-Kinds') !== '1' && payload.diary.countdowns.length > 0;
+  const preserveAnxiety = request.headers.get('X-Diary-Anxiety-Logs') !== '1' || payload.diary.anxietyLogs === undefined;
+  if (payload.version && (preserveDayKinds || preserveAnxiety)) {
     const previous = await bucket.get(key, { onlyIf: { etagMatches: payload.version } });
     if (!previous?.body) throw new DiaryRequestError(409, '请重新同步最新的日记');
-    const anniversaries = new Set((await previous.json()).countdowns.filter(day => day.kind === 'anniversary').map(day => day.id));
-    for (const day of payload.diary.countdowns) {
-      if (anniversaries.has(day.id)) day.kind = 'anniversary';
+    const prior = await previous.json();
+    if (preserveAnxiety) payload.diary.anxietyLogs = prior.anxietyLogs ?? [];
+    if (preserveDayKinds) {
+      const anniversaries = new Set(prior.countdowns.filter(day => day.kind === 'anniversary').map(day => day.id));
+      for (const day of payload.diary.countdowns) {
+        if (anniversaries.has(day.id)) day.kind = 'anniversary';
+      }
     }
+    if (new Blob([JSON.stringify(payload)]).size > snapshotLimit) throw new DiaryRequestError(413, '文件超出同步大小限制');
   }
   await confirmPhotos(bucket, prefix + 'photos/', photoIds);
   const onlyIf = payload.version === null

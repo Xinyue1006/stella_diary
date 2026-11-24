@@ -97,6 +97,8 @@ button, p, label, small { overflow-wrap: anywhere; }
 .hero-art::after { content: ""; position: absolute; left: 10%; right: 8%; bottom: 16px; height: 12px; border-radius: 50%; background: #2446322b; filter: blur(7px); z-index: 0; }
 .hero-pig, .hero-mascot { position: absolute; z-index: 1; bottom: 4%; left: 2%; width: 96%; height: 85%; object-fit: contain; object-position: center bottom; filter: drop-shadow(0 8px 7px #36523e14); }
 .hero-note { color: var(--muted); font-size: .875rem; line-height: 1.8; }
+.hero-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.hero-buttons .button.quiet { background: #fffdf3; border-color: #d6dac4; }
 .journal-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; align-items: start; gap: 28px; }
 .journal-main, .journal-aside { min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 3px; }
@@ -263,6 +265,37 @@ button, p, label, small { overflow-wrap: anywhere; }
 .notice > p { font-size: .875rem; line-height: 1.9; }
 
 .editor-form { display: flex; flex-direction: column; gap: 23px; }
+.anxiety-prompt { display: flex; align-items: center; gap: clamp(12px, 3vw, 22px); }
+.anxiety-prompt h2 { font-size: clamp(1.35rem, 4.5vw, 1.9rem); line-height: 1.45; margin-block: 3px; }
+.anxiety-portrait { flex: 0 0 auto; display: grid; place-items: center; width: clamp(66px, 14vw, 92px); aspect-ratio: 1; border-radius: 45% 45% 26% 26%; background: var(--mascot-color); }
+.anxiety-portrait img { width: 88%; height: 88%; object-fit: contain; }
+.anxiety-prompt .field-help { margin: 0; }
+.anxiety-form .field small { color: var(--muted); font-weight: 400; }
+.anxiety-form .field textarea { min-height: 6.5rem; padding: 12px 15px; }
+.anxiety-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.anxiety-group legend { padding: 0; margin-bottom: 9px; color: #52674e; font-weight: 600; font-size: .9375rem; }
+.anxiety-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.anxiety-option { display: flex; align-items: center; gap: 7px; min-height: 46px; max-width: 100%; border: 1px solid var(--line); background: var(--surface); padding: 9px 12px; border-radius: 13px; cursor: pointer; overflow-wrap: anywhere; }
+.anxiety-option input { flex: none; width: 17px; height: 17px; margin: 0; -webkit-appearance: auto; appearance: auto; accent-color: var(--green); }
+.anxiety-option:has(input:checked) { background: var(--green-light); border-color: #789474; color: var(--green-deep); }
+.anxiety-option:focus-within { outline: 2px solid var(--green); outline-offset: 2px; }
+.intensity-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.intensity-options .anxiety-option { justify-content: center; }
+@media (max-width: 420px) {
+  .intensity-options .anxiety-option { flex-direction: column; gap: 5px; padding: 8px 4px; }
+}
+.anxiety-custom-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.anxiety-custom-row .button { flex: none; }
+.anxiety-form [data-anxiety-helpful]:empty { display: none; }
+.anxiety-suggestion { color: var(--green-deep); background: var(--green-light); border-inline-start: 3px solid #83a67c; padding: 11px 15px; border-radius: 0 13px 13px 0; overflow-wrap: anywhere; line-height: 1.7; }
+.anxiety-card { border-inline-start: 3px solid #aac09d; }
+.anxiety-level { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 7px; font-size: 1rem; }
+.anxiety-level span, .anxiety-methods li span { font-size: .8125rem; color: var(--green-deep); padding: 3px 9px; background: var(--green-light); border-radius: 9px; }
+.anxiety-after { margin-top: 14px; }
+.anxiety-after strong { font-size: .875rem; color: var(--green); }
+.anxiety-methods { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 13px 0; }
+.anxiety-methods li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--line); border-radius: 10px; font-size: .875rem; overflow-wrap: anywhere; }
+.anxiety-followup { margin-top: 12px; }
 .field { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .field-label, .field > label { color: #52674e; font-size: .9375rem; font-weight: 600; }
 .field-control, .field input:not([type="file"]), .field textarea, .field select { width: 100%; padding: 13px 15px; border: 1px solid #dfe5d5; border-radius: 14px; background: var(--surface); font-size: 1rem; line-height: 1.6; }
